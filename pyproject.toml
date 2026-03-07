@@ -1,0 +1,30 @@
+[project]
+name = "ai-karaoke"
+version = "0.1.0"
+description = "Two-stem (vocals/instrumental) MP3 player with independent volume sliders."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0.0",
+  "sounddevice>=0.5.0",
+  "tk>=0.1.0",
+]
+
+[project.scripts]
+ai-karaoke = "ai_karaoke.app:main"
+ai-karaoke-process = "ai_karaoke.music_processing.main:main"
+
+[dependency-groups]
+music-processing = [
+  "audio-separator[gpu]>=0.41.1",
+  "ctc-forced-aligner",
+  "lyricsgenius>=3.7.4",
+  "tqdm>=4.67.3",
+]
+
+[tool.uv]
+package = true
+default-groups = ["music-processing"]
+
+[tool.uv.sources]
+ctc-forced-aligner = { git = "https://github.com/MahmoudAshraf97/ctc-forced-aligner.git" }

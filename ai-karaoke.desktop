@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=AI Karaoke
+Comment=Two-stem MP3 player with independent volume sliders
+Exec=/home/YOUR_USERNAME/.local/bin/ai-karaoke
+Icon=ai-karaoke
+StartupNotify=true
+StartupWMClass=AIKaraoke
+Terminal=false
+Categories=AudioVideo;Audio;Player;
