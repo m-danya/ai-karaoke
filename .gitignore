@@ -217,3 +217,5 @@ __marimo__/
 .venv/
 *.pyc
 
+# ai-karaoke runtime model cache
+/models-data/

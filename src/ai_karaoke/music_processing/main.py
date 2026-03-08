@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+import os
 from pathlib import Path
+import sys
 import zipfile
 
 from audio_separator.separator import Separator
@@ -27,21 +29,22 @@ INSTRUMENTAL_SUFFIX = "_(Instrumental)"
 RESULT_SUFFIXES = (INSTRUMENTAL_SUFFIX, VOCALS_SUFFIX)
 KARAOKE_LYRICS_SUFFIX = "_(Karaoke Lyrics)"
 MODEL_FILENAME = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
-_IN_PACKAGE_MODEL_DATA_DIR = (
-    Path(__file__).resolve().parents[1] / "audio-separator-script" / "models-data"
-)
-_LEGACY_MODEL_DATA_DIR = (
-    Path(__file__).resolve().parents[3] / "audio-separator-script" / "models-data"
-)
-MODEL_DATA_DIR = (
-    _IN_PACKAGE_MODEL_DATA_DIR
-    if _IN_PACKAGE_MODEL_DATA_DIR.exists()
-    else (
-        _LEGACY_MODEL_DATA_DIR
-        if _LEGACY_MODEL_DATA_DIR.exists()
-        else Path(__file__).resolve().parent / "models-data"
-    )
-)
+
+
+def _default_model_cache_dir() -> Path:
+    if sys.platform.startswith("win"):
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base) / "ai-karaoke-models-cache"
+        return Path.home() / "AppData" / "Local" / "ai-karaoke-models-cache"
+
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache_home:
+        return Path(xdg_cache_home) / "ai-karaoke-models-cache"
+    return Path.home() / ".cache" / "ai-karaoke-models-cache"
+
+
+MODEL_DATA_DIR = _default_model_cache_dir()
 DEFAULT_JOBS = 1
 MDX_PARAMS = {
     "hop_length": 1024,
@@ -146,6 +149,23 @@ def _prepare_model_cache(model_dir: Path, model_filename: str) -> None:
     model_path.unlink(missing_ok=True)
 
 
+def _ensure_model_data_dir() -> Path:
+    model_dir = MODEL_DATA_DIR
+    model_dir.mkdir(parents=True, exist_ok=True)
+    return model_dir
+
+
+def _warmup_separator_model(model_dir: Path) -> None:
+    global _WORKER_SEPARATOR
+    separator = Separator(
+        output_format="MP3",
+        mdx_params=MDX_PARAMS,
+        model_file_dir=str(model_dir),
+    )
+    separator.load_model(model_filename=MODEL_FILENAME)
+    _WORKER_SEPARATOR = separator
+
+
 def _get_worker_separator() -> Separator:
     global _WORKER_SEPARATOR
     if _WORKER_SEPARATOR is None:
@@ -204,7 +224,9 @@ def separate_mp3s(root: Path, jobs: int = DEFAULT_JOBS) -> None:
         )
         return
 
-    _prepare_model_cache(MODEL_DATA_DIR, MODEL_FILENAME)
+    model_dir = _ensure_model_data_dir()
+    _prepare_model_cache(model_dir, MODEL_FILENAME)
+    _warmup_separator_model(model_dir)
 
     max_workers = min(jobs, len(files))
     if max_workers == 1:
