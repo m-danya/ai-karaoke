@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+import multiprocessing as mp
 import os
 from pathlib import Path
 import sys
@@ -56,6 +57,7 @@ MDX_PARAMS = {
 
 _WORKER_SEPARATOR: Separator | None = None
 _WORKER_ALIGNER: LyricsAligner | None = None
+_SPAWN_CTX = mp.get_context("spawn")
 
 
 def _is_result_mp3(path: Path) -> bool:
@@ -240,7 +242,7 @@ def separate_mp3s(root: Path, jobs: int = DEFAULT_JOBS) -> None:
                 print(warning)
         return
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=_SPAWN_CTX) as executor:
         futures = {
             executor.submit(_separate_one_mp3, str(mp3_path)): mp3_path
             for mp3_path in files
@@ -342,7 +344,7 @@ def process_genius_lyrics(
                 print(warning)
         return
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=_SPAWN_CTX) as executor:
         futures = {
             executor.submit(_align_one_lyrics, str(lyrics_path), force): lyrics_path
             for lyrics_path in files
