@@ -7,6 +7,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 import random
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -1260,24 +1261,32 @@ class App(tk.Tk):
 
         self._append_process_log(f"Command: {' '.join(command)}\n\n")
 
+        popen_kwargs: dict[str, object] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+            "cwd": str(self._project_root()),
+        }
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if creationflags:
+                popen_kwargs["creationflags"] = creationflags
+        else:
+            # Run in a separate session so force-kill can terminate all worker children.
+            popen_kwargs["start_new_session"] = True
+
         try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                cwd=str(self._project_root()),
-            )
+            process = subprocess.Popen(command, **popen_kwargs)
         except (OSError, ValueError) as exc:
             self._append_process_log(f"Failed to start process: {exc}\n")
             return
 
         if process.stdout is None:
             self._append_process_log("Failed to capture process output.\n")
-            process.terminate()
+            self._terminate_music_processing_process(process, force_kill=False)
             return
 
         self._process_running = True
@@ -1467,22 +1476,7 @@ class App(tk.Tk):
 
         process = self._process_subprocess
         if process is not None and process.poll() is None:
-            if force_kill:
-                process.kill()
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-            else:
-                process.terminate()
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    try:
-                        process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        pass
+            self._terminate_music_processing_process(process, force_kill=force_kill)
 
         self._process_running = False
         self._process_subprocess = None
@@ -1490,6 +1484,61 @@ class App(tk.Tk):
         self._process_reader_thread = None
         if not self._recording_active:
             self.btn_process.configure(state="normal")
+
+    def _terminate_music_processing_process(
+        self, process: subprocess.Popen[str], *, force_kill: bool
+    ) -> None:
+        if process.poll() is not None:
+            return
+
+        if os.name != "nt":
+            try:
+                child_pgid = os.getpgid(process.pid)
+            except (OSError, ProcessLookupError):
+                child_pgid = None
+
+            # Kill the child's own process group; never target current UI group.
+            if child_pgid is not None and child_pgid != os.getpgrp():
+                sig = signal.SIGKILL if force_kill else signal.SIGTERM
+                try:
+                    os.killpg(child_pgid, sig)
+                except (OSError, ProcessLookupError):
+                    return
+
+                try:
+                    process.wait(timeout=2)
+                    return
+                except subprocess.TimeoutExpired:
+                    if force_kill:
+                        return
+
+                try:
+                    os.killpg(child_pgid, signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+                return
+
+        if force_kill:
+            process.kill()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            return
+
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
