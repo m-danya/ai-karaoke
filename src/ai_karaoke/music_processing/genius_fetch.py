@@ -397,11 +397,7 @@ def fetch_missing_genius_lyrics(root: Path, delay_seconds: float) -> None:
         f"Request delay: {delay_seconds:.1f}s."
     )
 
-    try:
-        fetcher = GeniusLyricsClient()
-    except Exception as exc:  # noqa: BLE001
-        print(f"Warning: could not initialize Genius API client: {exc}")
-        return
+    fetcher = GeniusLyricsClient()
 
     try:
         for idx, (vocals_path, lyrics_path) in enumerate(
