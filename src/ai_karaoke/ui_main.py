@@ -1396,13 +1396,19 @@ class App(tk.Tk):
         delay_entry.focus_set()
 
     def _on_process_log_close(self) -> None:
-        if self._process_running:
-            action = self._ask_process_close_action()
-            if action != "kill":
-                return
-            self._append_process_log("\nProcess forcefully killed by user.\n")
-            self._stop_music_processing(force_kill=True)
+        if not self._confirm_or_kill_running_process():
+            return
         self._close_process_log_window()
+
+    def _confirm_or_kill_running_process(self) -> bool:
+        if not self._process_running:
+            return True
+        action = self._ask_process_close_action()
+        if action != "kill":
+            return False
+        self._append_process_log("\nProcess forcefully killed by user.\n")
+        self._stop_music_processing(force_kill=True)
+        return True
 
     def _poll_process_output(self) -> None:
         self._process_poll_job = None
@@ -2568,6 +2574,8 @@ class App(tk.Tk):
         self._dismiss_track_context_menu()
         self._cancel_karaoke_countdown()
         self._close_process_settings_window()
+        if not self._confirm_or_kill_running_process():
+            return
         self._stop_music_processing()
         self._close_process_log_window()
         if self._ui_update_job is not None:
