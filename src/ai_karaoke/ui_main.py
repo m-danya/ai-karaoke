@@ -18,7 +18,7 @@ from typing import Callable, Dict, List, Optional, TypedDict
 import numpy as np
 import sounddevice as sd
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .audio import compute_vocals_env, decode_mp3_to_float32
 from .config import resolve_library_path, save_config
@@ -74,7 +74,7 @@ class App(tk.Tk):
         super().__init__(className="AIKaraoke")
         self.title("AI Karaoke")
         self.geometry("920x560")
-        self.minsize(920, 777)
+        self.minsize(1120, 777)
 
         self.folder = folder
         self._config: Dict[str, str] = dict(config) if config is not None else {}
@@ -464,7 +464,21 @@ class App(tk.Tk):
             style="Ghost.TButton",
             command=self._process_library,
         )
-        self.btn_process.pack(side="right")
+        self.btn_process.pack(side="right", padx=(8, 0))
+        self.btn_open_library = ttk.Button(
+            library_row,
+            text="Open",
+            style="Ghost.TButton",
+            command=self._open_library_folder,
+        )
+        self.btn_open_library.pack(side="right", padx=(8, 0))
+        self.btn_choose_library = ttk.Button(
+            library_row,
+            text="Choose",
+            style="Ghost.TButton",
+            command=self._choose_library_folder,
+        )
+        self.btn_choose_library.pack(side="right", padx=(8, 0))
 
         autoplay_row = ttk.Frame(left_inner, style="Panel.TFrame")
         autoplay_row.pack(fill="x", pady=(8, 2))
@@ -660,6 +674,8 @@ class App(tk.Tk):
         self.search.configure(state=list_state)
         self.filter_combo.configure(state="disabled" if active else "readonly")
         self.library_entry.configure(state=list_state)
+        self.btn_choose_library.configure(state=list_state)
+        self.btn_open_library.configure(state=list_state)
         self.btn_rescan.configure(state=list_state)
         self.btn_process.configure(state="disabled" if active or self._process_running else "normal")
         self.btn_show_file.configure(state=list_state)
@@ -1076,6 +1092,27 @@ class App(tk.Tk):
             messagebox.showerror("Invalid folder", f"Path does not exist:\n{folder}")
             return None
         return folder
+
+    def _choose_library_folder(self) -> None:
+        initial_dir = self.library_var.get().strip() or str(self.folder)
+        chosen = filedialog.askdirectory(parent=self, initialdir=initial_dir, mustexist=True)
+        if not chosen:
+            return
+        self.library_var.set(chosen)
+        self._rescan_music()
+
+    def _open_library_folder(self) -> None:
+        folder = self._resolve_library_folder_from_input(allow_create=False)
+        if folder is None:
+            return
+        self.library_var.set(str(folder))
+        try:
+            self._show_in_file_manager(folder)
+        except OSError as exc:
+            messagebox.showerror(
+                "Open folder failed",
+                f"Could not open folder in file manager:\n{folder}\n\n{exc}",
+            )
 
     def _open_process_log_window(self, folder: Path) -> None:
         if self._process_log_window is None or not self._process_log_window.winfo_exists():
