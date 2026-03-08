@@ -25,6 +25,17 @@ Given an MP3 file, the processing pipeline does this in order:
 3. Forced alignment: aligns words to vocal audio and writes `_(Karaoke
    Lyrics).json` with per-word timestamps.
 
+## How to properly place mp3s in the library directory
+
+`Process` scans the selected library path **recursively** and takes every `.mp3`
+file as source, except already processed files.
+
+So all these source layouts are valid:
+
+- `<library_dir>/Artist/Song.mp3`
+- `<library_dir>/Artist/Album/Song.mp3` (the album name is ignored when fetching lyrics from Genius)
+- `<library_dir>/Song.mp3` (BUT it will most likely not work when fetching lyrics from Genius!)
+
 ## Requirements
 
 - `uv`
