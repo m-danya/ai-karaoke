@@ -1,5 +1,7 @@
 # AI Karaoke
 
+**Ролик на русском про этот проект: [https://youtu.be/-nD3SonIOUs](https://youtu.be/-nD3SonIOUs)**
+
 ![AI Karaoke logo](assets/ai-karaoke.svg)
 
 A desktop karaoke workstation for turning **plain MP3 files** into a playable
