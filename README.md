@@ -2,7 +2,7 @@
 
 **Ролик на русском про этот проект: [https://youtu.be/-nD3SonIOUs](https://youtu.be/-nD3SonIOUs)**
 
-![AI Karaoke logo](assets/ai-karaoke.svg)
+![AI Karaoke logo](assets/logo-transparent.png)
 
 A desktop karaoke workstation for turning **plain MP3 files** into a playable
 two-stem karaoke library.
@@ -77,12 +77,14 @@ application like a regular app:
 ## Desktop Entry (Linux)
 
 ```bash
-# edit desktop file appropriately before copying: change "YOUR_USERNAME" to your username
-cp ai-karaoke.desktop ~/.local/share/applications/
-mkdir -p ~/.local/share/icons/hicolor/scalable/apps
-cp assets/ai-karaoke.svg ~/.local/share/icons/hicolor/scalable/apps/ai-karaoke.svg
-update-desktop-database ~/.local/share/applications
+./install.sh
 ```
+
+`install.sh` automatically:
+- installs/upgrades the app executable with `uv tool install --force -e .`
+- installs the icon to `~/.local/share/icons/hicolor/scalable/apps/ai-karaoke.png`
+- generates `~/.local/share/applications/ai-karaoke.desktop` with the correct `Exec=...` path
+- updates icon cache / desktop database when corresponding tools are available
 
 ## Storage
 
