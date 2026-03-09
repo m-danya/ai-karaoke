@@ -2,7 +2,7 @@
 
 **Ролик на русском про этот проект: [https://youtu.be/-nD3SonIOUs](https://youtu.be/-nD3SonIOUs)**
 
-![AI Karaoke logo](assets/logo-transparent.png)
+<img src="assets/logo-transparent.png" alt="AI Karaoke logo" width="200" />
 
 A desktop karaoke workstation for turning **plain MP3 files** into a playable
 two-stem karaoke library.
