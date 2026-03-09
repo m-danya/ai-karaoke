@@ -42,20 +42,22 @@ So all these source layouts are valid:
 - `ffmpeg` available in `PATH`
 - (very desirable) a GPU (for processing pipeline)
 
-## Setup
+## Quick Start (Recommended)
 
 ```bash
-uv sync
+./install.sh
 ```
 
-If you already have your karaoke library processed and want to install the app
-on the second computer, for example on a laptop just to play the tracks, you can
-avoid installing heavy ML-related dependencies this command instead:
+`install.sh` automatically:
+- asks for Genius Client Access Token interactively
+- shows where to get it: https://genius.com/api-clients
+- creates/updates `.env` with `GENIUS_ACCESS_TOKEN=...`
+- installs/upgrades the app executable with `uv tool install --force -e .`
+- installs the icon to `~/.local/share/icons/hicolor/scalable/apps/ai-karaoke.png`
+- generates `~/.local/share/applications/ai-karaoke.desktop` with the correct `Exec=...` path
+- updates icon cache / desktop database when corresponding tools are available
 
-```bash
-uv sync --no-group music-processing
-```
-
+## Manual Setup (If You Need It)
 
 Create `.env` in the project root with a Genius token:
 
@@ -63,28 +65,21 @@ Create `.env` in the project root with a Genius token:
 GENIUS_ACCESS_TOKEN=your_token_here
 ```
 
-You can your  Client Access Token at this page for free: https://genius.com/api-clients
+You can get your Client Access Token for free at:
+https://genius.com/api-clients
 
-## Run
+If you already have your karaoke library processed and want to run only player
+features (for example on a laptop), install without GPU-related dependencies:
+
+```bash
+uv sync --no-group gpu
+```
+
+Then run the app manually:
 
 ```bash
 uv run ai-karaoke
 ```
-
-It is recommended to install the desktop entry (see below) to run the
-application like a regular app:
-
-## Desktop Entry (Linux)
-
-```bash
-./install.sh
-```
-
-`install.sh` automatically:
-- installs/upgrades the app executable with `uv tool install --force -e .`
-- installs the icon to `~/.local/share/icons/hicolor/scalable/apps/ai-karaoke.png`
-- generates `~/.local/share/applications/ai-karaoke.desktop` with the correct `Exec=...` path
-- updates icon cache / desktop database when corresponding tools are available
 
 ## Storage
 
