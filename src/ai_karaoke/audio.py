@@ -105,6 +105,52 @@ def transpose_mp3(
         "2",
         str(output_path),
     ]
+    _run_ffmpeg_command(cmd)
+
+
+def mix_stems_to_mp3(
+    vocals_path: Path,
+    instrumental_path: Path,
+    output_path: Path,
+    *,
+    vocals_gain: float = 1.0,
+    instr_gain: float = 1.0,
+    vocals_muted: bool = False,
+    instr_muted: bool = False,
+    sr: int = DEFAULT_SR,
+) -> None:
+    effective_vocals_gain = 0.0 if vocals_muted else max(0.0, float(vocals_gain))
+    effective_instr_gain = 0.0 if instr_muted else max(0.0, float(instr_gain))
+    try:
+        _run_ffmpeg_command(
+            _mix_stems_command(
+                vocals_path,
+                instrumental_path,
+                output_path,
+                vocals_gain=effective_vocals_gain,
+                instr_gain=effective_instr_gain,
+                sr=sr,
+                use_limiter=True,
+            )
+        )
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or "").lower()
+        if "alimiter" not in details or "no such filter" not in details:
+            raise
+        _run_ffmpeg_command(
+            _mix_stems_command(
+                vocals_path,
+                instrumental_path,
+                output_path,
+                vocals_gain=effective_vocals_gain,
+                instr_gain=effective_instr_gain,
+                sr=sr,
+                use_limiter=False,
+            )
+        )
+
+
+def _run_ffmpeg_command(cmd: List[str]) -> None:
     subprocess.run(
         cmd,
         check=True,
@@ -114,3 +160,47 @@ def transpose_mp3(
         encoding="utf-8",
         errors="replace",
     )
+
+
+def _mix_stems_command(
+    vocals_path: Path,
+    instrumental_path: Path,
+    output_path: Path,
+    *,
+    vocals_gain: float,
+    instr_gain: float,
+    sr: int,
+    use_limiter: bool,
+) -> List[str]:
+    mix_tail = "amix=inputs=2:duration=longest:dropout_transition=0:normalize=0"
+    if use_limiter:
+        mix_tail = f"{mix_tail},alimiter=limit=0.98"
+    filter_complex = (
+        f"[0:a]aresample={sr},volume={vocals_gain:.10f}[vocals];"
+        f"[1:a]aresample={sr},volume={instr_gain:.10f}[instr];"
+        f"[vocals][instr]{mix_tail}[out]"
+    )
+    return [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(vocals_path),
+        "-i",
+        str(instrumental_path),
+        "-vn",
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[out]",
+        "-ar",
+        str(sr),
+        "-ac",
+        str(DEFAULT_CH),
+        "-c:a",
+        "libmp3lame",
+        "-q:a",
+        "0",
+        str(output_path),
+    ]

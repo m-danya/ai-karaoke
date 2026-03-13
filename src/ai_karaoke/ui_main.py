@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import threading
+import tempfile
 import urllib.parse
 import webbrowser
 from pathlib import Path
@@ -22,7 +23,7 @@ import sounddevice as sd
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .audio import compute_vocals_env, decode_mp3_to_float32, transpose_mp3
+from .audio import compute_vocals_env, decode_mp3_to_float32, mix_stems_to_mp3, transpose_mp3
 from .config import resolve_library_path, save_config
 from .constants import GENIUS_TAG, INSTR_TAG, KARAOKE_TAG, VOCALS_TAG
 from .karaoke_screen import KaraokeCallbacks, KaraokeScreen
@@ -68,6 +69,15 @@ class TransposedTrackPaths:
     instrumental: Path
     genius_lyrics: Path
     karaoke: Path
+
+
+@dataclass(frozen=True)
+class ExportMixSettings:
+    label: str
+    vocals_gain: float
+    instr_gain: float
+    vocals_muted: bool
+    instr_muted: bool
 
 
 _KEY_INPUT_RE = re.compile(r"^\s*([A-Ga-g])([#b]?)(m?)\s*$")
@@ -150,7 +160,7 @@ class App(tk.Tk):
         super().__init__(className="AIKaraoke")
         self.title("AI Karaoke")
         self.geometry("920x560")
-        self.minsize(1120, 777)
+        self.minsize(1120, 827)
 
         self.folder = folder
         self._config: Dict[str, str] = dict(config) if config is not None else {}
@@ -208,6 +218,11 @@ class App(tk.Tk):
         self._transpose_progress_label: Optional[ttk.Label] = None
         self._transpose_progress_bar: Optional[ttk.Progressbar] = None
         self._transpose_thread: Optional[threading.Thread] = None
+        self._save_mp3_running = False
+        self._save_mp3_progress_window: Optional[tk.Toplevel] = None
+        self._save_mp3_progress_label: Optional[ttk.Label] = None
+        self._save_mp3_progress_bar: Optional[ttk.Progressbar] = None
+        self._save_mp3_thread: Optional[threading.Thread] = None
         self._karaoke_entries: List[KaraokeEntry] = []
         self._karaoke_end_ts: List[float] = []
         self._karaoke_pair: Optional[SongPair] = None
@@ -710,6 +725,14 @@ class App(tk.Tk):
         )
         self.btn_transpose.pack(fill="x", pady=(8, 0))
 
+        self.btn_save_mp3 = ttk.Button(
+            right_inner,
+            text="Save as mp3",
+            style="Ghost.TButton",
+            command=self._save_current_track_as_mp3,
+        )
+        self.btn_save_mp3.pack(fill="x", pady=(8, 0))
+
         self.btn_delete = ttk.Button(
             right_inner,
             text="Delete track",
@@ -751,6 +774,7 @@ class App(tk.Tk):
         self.btn_play.configure(state=state)
         self.btn_show_file.configure(state=state)
         self.btn_transpose.configure(state=state)
+        self.btn_save_mp3.configure(state=state)
         self.btn_delete.configure(state=state)
         self.seek.configure(state=state)
         self.btn_start_karaoke.configure(state=state)
@@ -771,6 +795,7 @@ class App(tk.Tk):
         self.btn_process.configure(state="disabled" if active or self._process_running else "normal")
         self.btn_show_file.configure(state=list_state)
         self.btn_transpose.configure(state=list_state)
+        self.btn_save_mp3.configure(state=list_state)
         self.btn_delete.configure(state=list_state)
         self.btn_start_karaoke.configure(state=list_state)
         self.seek.configure(state=list_state)
@@ -1939,6 +1964,107 @@ class App(tk.Tk):
                 f"Could not show file in file manager:\n{target}\n\n{exc}",
             )
 
+    def _default_music_dir(self) -> Path:
+        music_dir = (Path.home() / "Music").expanduser()
+        if music_dir.exists():
+            return music_dir
+        return Path.home()
+
+    def _current_mix_percentages(self) -> tuple[int, int]:
+        vocals_gain = 0.0 if self.player.mix.vocals_muted else self.player.mix.vocals_gain
+        instr_gain = 0.0 if self.player.mix.instr_muted else self.player.mix.instr_gain
+        vocals_percent = int(round(max(0.0, vocals_gain) * 100.0))
+        instr_percent = int(round(max(0.0, instr_gain) * 100.0))
+        return vocals_percent, instr_percent
+
+    def _current_mix_matches_original_levels(self) -> bool:
+        vocals_percent, instr_percent = self._current_mix_percentages()
+        return vocals_percent == 100 and instr_percent == 100
+
+    def _ask_save_mp3_mix_mode(self) -> Optional[str]:
+        if self._current_mix_matches_original_levels():
+            return "original"
+
+        vocals_percent, instr_percent = self._current_mix_percentages()
+        result = {"choice": None}
+        dialog = tk.Toplevel(self)
+        dialog.title("Save as mp3")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text=(
+                "Choose volume levels mode.\n"
+                "Original levels: 100% vocals, 100% instrumental.\n"
+                f"Current UI levels: {vocals_percent}% vocals, {instr_percent}% instrumental."
+            ),
+            style="Subtle.TLabel",
+            justify="left",
+            wraplength=440,
+        ).pack(anchor="w", padx=12, pady=(14, 12))
+
+        button_row = ttk.Frame(dialog)
+        button_row.pack(fill="x", padx=12, pady=(0, 14))
+
+        def _choose(choice: Optional[str]) -> None:
+            result["choice"] = choice
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
+        current_button = ttk.Button(
+            button_row,
+            text="Current volume levels",
+            style="Ghost.TButton",
+            command=lambda: _choose("current"),
+        )
+        current_button.pack(side="right", padx=(8, 0))
+        original_button = ttk.Button(
+            button_row,
+            text="Original volume levels (100% both)",
+            style="Accent.TButton",
+            command=lambda: _choose("original"),
+        )
+        original_button.pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: _choose(None))
+        self._fit_dialog_to_content(dialog, min_width=470, min_height=160)
+        original_button.focus_set()
+        self.wait_window(dialog)
+        choice = result["choice"]
+        return choice if isinstance(choice, str) else None
+
+    def _close_save_mp3_progress_window(self) -> None:
+        progress = self._save_mp3_progress_bar
+        if progress is not None:
+            try:
+                progress.stop()
+            except tk.TclError:
+                pass
+        if self._save_mp3_progress_window is not None and self._save_mp3_progress_window.winfo_exists():
+            try:
+                self._save_mp3_progress_window.grab_release()
+            except tk.TclError:
+                pass
+            self._save_mp3_progress_window.destroy()
+        self._save_mp3_progress_window = None
+        self._save_mp3_progress_label = None
+        self._save_mp3_progress_bar = None
+
+    def _set_save_mp3_progress(self, text: str) -> None:
+        label = self._save_mp3_progress_label
+        if label is None or not label.winfo_exists():
+            return
+        label.configure(text=text)
+        try:
+            label.update_idletasks()
+        except tk.TclError:
+            pass
+
     def _close_transpose_dialog(self) -> None:
         if self._transpose_dialog is not None and self._transpose_dialog.winfo_exists():
             try:
@@ -1975,7 +2101,7 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
-    def _transpose_error_details(self, exc: Exception) -> str:
+    def _ffmpeg_error_details(self, exc: Exception) -> str:
         if isinstance(exc, FileNotFoundError):
             return "ffmpeg is required in PATH."
         if isinstance(exc, subprocess.CalledProcessError):
@@ -1983,6 +2109,23 @@ class App(tk.Tk):
             if details:
                 return details
         return str(exc)
+
+    def _export_mix_settings(self, mode: str) -> ExportMixSettings:
+        if mode == "current":
+            return ExportMixSettings(
+                label="current mix",
+                vocals_gain=self.player.mix.vocals_gain,
+                instr_gain=self.player.mix.instr_gain,
+                vocals_muted=self.player.mix.vocals_muted,
+                instr_muted=self.player.mix.instr_muted,
+            )
+        return ExportMixSettings(
+            label="original 100/100 mix",
+            vocals_gain=1.0,
+            instr_gain=1.0,
+            vocals_muted=False,
+            instr_muted=False,
+        )
 
     def _copy_related_file_if_present(self, source: Path, target: Path) -> bool:
         if not source.is_file():
@@ -2014,6 +2157,77 @@ class App(tk.Tk):
                 return paths
             attempt += 1
 
+    def _save_current_track_as_mp3(self) -> None:
+        if self._recording_active:
+            return
+        if self._loading:
+            return
+        if self._process_running:
+            messagebox.showinfo(
+                "Processing in progress",
+                "Wait until library processing finishes before saving an MP3.",
+            )
+            return
+        if self._transpose_running:
+            messagebox.showinfo(
+                "Transposition in progress",
+                "Wait until the current transposition finishes before saving an MP3.",
+            )
+            return
+        if self._save_mp3_running:
+            if self._save_mp3_progress_window is not None and self._save_mp3_progress_window.winfo_exists():
+                self._save_mp3_progress_window.deiconify()
+                self._save_mp3_progress_window.lift()
+            return
+
+        pair = self._current_pair
+        if pair is None:
+            messagebox.showinfo("No track selected", "Select a track to save.")
+            return
+        if not pair.vocals.exists() or not pair.instrumental.exists():
+            messagebox.showerror(
+                "Track files missing",
+                "The selected track is missing one or both MP3 stems. Rescan the library first.",
+            )
+            return
+
+        mix_mode = self._ask_save_mp3_mix_mode()
+        if mix_mode is None:
+            return
+        mix_settings = self._export_mix_settings(mix_mode)
+        output_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save as mp3",
+            initialdir=str(self._default_music_dir()),
+            initialfile=f"{base_name_for_pair(pair)}.mp3",
+            defaultextension=".mp3",
+            filetypes=[("MP3 files", "*.mp3")],
+            confirmoverwrite=True,
+        )
+        if not output_path:
+            return
+
+        target = Path(output_path).expanduser()
+        try:
+            resolved_target = target.resolve(strict=False)
+        except OSError:
+            resolved_target = target.absolute()
+        try:
+            source_paths = {
+                pair.vocals.resolve(strict=False),
+                pair.instrumental.resolve(strict=False),
+            }
+        except OSError:
+            source_paths = {pair.vocals.absolute(), pair.instrumental.absolute()}
+        if resolved_target in source_paths:
+            messagebox.showerror(
+                "Invalid destination",
+                "Choose a new file name so the export does not overwrite one of the source stems.",
+            )
+            return
+
+        self._start_save_mp3(pair, resolved_target, mix_settings)
+
     def _open_transpose_dialog(self) -> None:
         if self._recording_active:
             return
@@ -2023,6 +2237,12 @@ class App(tk.Tk):
             messagebox.showinfo(
                 "Processing in progress",
                 "Wait until library processing finishes before starting transposition.",
+            )
+            return
+        if self._save_mp3_running:
+            messagebox.showinfo(
+                "MP3 export in progress",
+                "Wait until the current MP3 export finishes before starting transposition.",
             )
             return
         if self._transpose_running:
@@ -2234,7 +2454,95 @@ class App(tk.Tk):
         self._close_transpose_progress_window()
         messagebox.showerror(
             "Transpose failed",
-            f"Could not transpose:\n{pair.key}\n\n{self._transpose_error_details(exc)}",
+            f"Could not transpose:\n{pair.key}\n\n{self._ffmpeg_error_details(exc)}",
+        )
+
+    def _start_save_mp3(self, pair: SongPair, output_path: Path, mix_settings: ExportMixSettings) -> None:
+        if self._save_mp3_running:
+            return
+
+        win = tk.Toplevel(self)
+        self._save_mp3_progress_window = win
+        win.title("Saving MP3")
+        win.resizable(False, False)
+        win.transient(self)
+        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        ttk.Label(
+            win,
+            text="Rendering the selected track into a single MP3 file.",
+            style="Subtle.TLabel",
+            wraplength=390,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(14, 8))
+
+        self._save_mp3_progress_label = ttk.Label(
+            win,
+            text=f"Preparing {mix_settings.label}...",
+            style="Subtle.TLabel",
+        )
+        self._save_mp3_progress_label.pack(anchor="w", padx=12)
+
+        progress = ttk.Progressbar(win, mode="indeterminate", length=390)
+        progress.pack(fill="x", padx=12, pady=(12, 14))
+        progress.start(12)
+        self._save_mp3_progress_bar = progress
+        self._fit_dialog_to_content(win, min_width=430, min_height=150)
+
+        self._save_mp3_running = True
+
+        def worker() -> None:
+            temp_output: Optional[Path] = None
+            try:
+                self.after(0, lambda: self._set_save_mp3_progress(f"Rendering {mix_settings.label}..."))
+                with tempfile.NamedTemporaryFile(
+                    prefix=f"{output_path.stem}.",
+                    suffix=".mp3",
+                    dir=str(output_path.parent),
+                    delete=False,
+                ) as handle:
+                    temp_output = Path(handle.name)
+                mix_stems_to_mp3(
+                    pair.vocals,
+                    pair.instrumental,
+                    temp_output,
+                    vocals_gain=mix_settings.vocals_gain,
+                    instr_gain=mix_settings.instr_gain,
+                    vocals_muted=mix_settings.vocals_muted,
+                    instr_muted=mix_settings.instr_muted,
+                    sr=self.player.sr,
+                )
+                temp_output.replace(output_path)
+            except Exception as exc:
+                if temp_output is not None:
+                    try:
+                        temp_output.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        pass
+                self.after(0, lambda exc=exc: self._finish_save_mp3_failure(pair, output_path, exc))
+                return
+
+            self.after(0, lambda: self._finish_save_mp3_success(output_path))
+
+        self._save_mp3_thread = threading.Thread(target=worker, daemon=True)
+        self._save_mp3_thread.start()
+
+    def _finish_save_mp3_success(self, output_path: Path) -> None:
+        self._save_mp3_running = False
+        self._save_mp3_thread = None
+        self._close_save_mp3_progress_window()
+        messagebox.showinfo("Save complete", f"Saved MP3 to:\n{output_path}")
+
+    def _finish_save_mp3_failure(self, pair: SongPair, output_path: Path, exc: Exception) -> None:
+        self._save_mp3_running = False
+        self._save_mp3_thread = None
+        self._close_save_mp3_progress_window()
+        messagebox.showerror(
+            "Save failed",
+            f"Could not save MP3 for:\n{pair.key}\n\nDestination:\n{output_path}\n\n{self._ffmpeg_error_details(exc)}",
         )
 
     def _on_select(self, event) -> None:
@@ -3019,6 +3327,13 @@ class App(tk.Tk):
             )
             return
         self._close_transpose_progress_window()
+        if self._save_mp3_running:
+            messagebox.showinfo(
+                "MP3 export in progress",
+                "Wait until the current MP3 export finishes before closing the app.",
+            )
+            return
+        self._close_save_mp3_progress_window()
         self._close_process_settings_window()
         if not self._confirm_or_kill_running_process():
             return
