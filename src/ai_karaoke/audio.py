@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
 import numpy as np
 
@@ -56,3 +56,61 @@ def compute_vocals_env(
     if env_max <= 1e-6:
         env_max = 1.0
     return env, hop, env_max
+
+
+def _atempo_values(target: float) -> List[float]:
+    remaining = target
+    values: List[float] = []
+    while remaining < 0.5:
+        values.append(0.5)
+        remaining /= 0.5
+    while remaining > 2.0:
+        values.append(2.0)
+        remaining /= 2.0
+    values.append(remaining)
+    return values
+
+
+def _pitch_shift_filter(semitones: int, sr: int) -> str:
+    pitch_factor = 2.0 ** (semitones / 12.0)
+    filters = [
+        f"aresample={sr}",
+        f"asetrate={sr}*{pitch_factor:.10f}",
+        f"aresample={sr}",
+    ]
+    filters.extend(f"atempo={value:.10f}" for value in _atempo_values(1.0 / pitch_factor))
+    return ",".join(filters)
+
+
+def transpose_mp3(
+    input_path: Path,
+    output_path: Path,
+    semitones: int,
+    *,
+    sr: int = DEFAULT_SR,
+) -> None:
+    cmd = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-af",
+        _pitch_shift_filter(semitones, sr),
+        "-ar",
+        str(sr),
+        "-q:a",
+        "2",
+        str(output_path),
+    ]
+    subprocess.run(
+        cmd,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )

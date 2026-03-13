@@ -5,8 +5,20 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .constants import INSTR_TAG, KARAOKE_TAG, PLAYLISTS_FILE, VOCALS_TAG
+from .constants import GENIUS_TAG, INSTR_TAG, KARAOKE_TAG, PLAYLISTS_FILE, VOCALS_TAG
 from .models import SongPair
+
+
+def stem_base_name(path: Path) -> Optional[str]:
+    name = path.name
+    if not name.lower().endswith(".mp3"):
+        return None
+
+    if VOCALS_TAG in name:
+        return name.replace(VOCALS_TAG, "").rsplit(".", 1)[0]
+    if INSTR_TAG in name:
+        return name.replace(INSTR_TAG, "").rsplit(".", 1)[0]
+    return None
 
 
 def _stem_key(p: Path) -> Optional[Tuple[str, str]]:
@@ -15,16 +27,12 @@ def _stem_key(p: Path) -> Optional[Tuple[str, str]]:
     Key is filename without the matching suffix and extension.
     """
     name = p.name
-    if not name.lower().endswith(".mp3"):
+    key = stem_base_name(p)
+    if key is None:
         return None
-
     if VOCALS_TAG in name:
-        key = name.replace(VOCALS_TAG, "").rsplit(".", 1)[0]
         return key, "vocals"
-    if INSTR_TAG in name:
-        key = name.replace(INSTR_TAG, "").rsplit(".", 1)[0]
-        return key, "instrumental"
-    return None
+    return key, "instrumental"
 
 
 def _display_key(rel_parts: Tuple[str, ...], base: str) -> str:
@@ -57,8 +65,20 @@ def scan_folder(folder: Path) -> List[SongPair]:
 
 
 def karaoke_path_for_pair(pair: SongPair) -> Path:
-    base = pair.vocals.name.replace(VOCALS_TAG, "").rsplit(".", 1)[0]
+    base = base_name_for_pair(pair)
     return pair.vocals.with_name(f"{base}{KARAOKE_TAG}.json")
+
+
+def genius_lyrics_path_for_pair(pair: SongPair) -> Path:
+    base = base_name_for_pair(pair)
+    return pair.vocals.with_name(f"{base}{GENIUS_TAG}.txt")
+
+
+def base_name_for_pair(pair: SongPair) -> str:
+    base = stem_base_name(pair.vocals)
+    if base is None:
+        raise ValueError(f"Unsupported vocals path: {pair.vocals}")
+    return base
 
 
 def playlists_path(folder: Path) -> Path:

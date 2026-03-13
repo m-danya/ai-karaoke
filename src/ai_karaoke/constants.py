@@ -5,6 +5,7 @@ from pathlib import Path
 
 VOCALS_TAG = "_(Vocals)"
 INSTR_TAG = "_(Instrumental)"
+GENIUS_TAG = "_(Genius Lyrics)"
 KARAOKE_TAG = "_(Karaoke Lyrics)"
 PLAYLISTS_FILE = ".ai_karaoke_playlists.json"
 

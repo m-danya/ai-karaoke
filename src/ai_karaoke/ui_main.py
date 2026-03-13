@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 from bisect import bisect_right
 from dataclasses import dataclass
 import random
@@ -21,10 +22,13 @@ import sounddevice as sd
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .audio import compute_vocals_env, decode_mp3_to_float32
+from .audio import compute_vocals_env, decode_mp3_to_float32, transpose_mp3
 from .config import resolve_library_path, save_config
+from .constants import GENIUS_TAG, INSTR_TAG, KARAOKE_TAG, VOCALS_TAG
 from .karaoke_screen import KaraokeCallbacks, KaraokeScreen
 from .library import (
+    base_name_for_pair,
+    genius_lyrics_path_for_pair,
     karaoke_path_for_pair,
     load_playlists,
     normalize_track_id,
@@ -55,6 +59,77 @@ class TrackListItem:
     label: str
     pair: Optional[SongPair]
     missing: bool
+
+
+@dataclass(frozen=True)
+class TransposedTrackPaths:
+    base_name: str
+    vocals: Path
+    instrumental: Path
+    genius_lyrics: Path
+    karaoke: Path
+
+
+_KEY_INPUT_RE = re.compile(r"^\s*([A-Ga-g])([#b]?)(m?)\s*$")
+_SHARP_KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+_FLAT_KEY_NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+_KEY_NAME_TO_INDEX = {
+    "C": 0,
+    "C#": 1,
+    "Db": 1,
+    "D": 2,
+    "D#": 3,
+    "Eb": 3,
+    "E": 4,
+    "F": 5,
+    "F#": 6,
+    "Gb": 6,
+    "G": 7,
+    "G#": 8,
+    "Ab": 8,
+    "A": 9,
+    "A#": 10,
+    "Bb": 10,
+    "B": 11,
+}
+
+
+def _parse_preview_key(raw: str) -> Optional[tuple[int, bool, bool]]:
+    match = _KEY_INPUT_RE.fullmatch(raw.strip())
+    if match is None:
+        return None
+    note = match.group(1).upper() + match.group(2)
+    index = _KEY_NAME_TO_INDEX.get(note)
+    if index is None:
+        return None
+    return index, bool(match.group(3)), match.group(2) == "b"
+
+
+def _transpose_preview_key(raw: str, semitones: int) -> str:
+    parsed = _parse_preview_key(raw)
+    if parsed is None:
+        return ""
+    index, is_minor, prefer_flats = parsed
+    names = _FLAT_KEY_NAMES if prefer_flats else _SHARP_KEY_NAMES
+    note = names[(index + semitones) % 12]
+    return f"{note}{'m' if is_minor else ''}"
+
+
+def _transpose_suffix(semitones: int, attempt: int = 0) -> str:
+    if attempt <= 0:
+        return f"({semitones:+d} transposed)"
+    return f"({semitones:+d} transposed {attempt + 1})"
+
+
+def _build_transposed_track_paths(pair: SongPair, semitones: int, attempt: int = 0) -> TransposedTrackPaths:
+    base_name = f"{base_name_for_pair(pair)} {_transpose_suffix(semitones, attempt)}"
+    return TransposedTrackPaths(
+        base_name=base_name,
+        vocals=pair.vocals.with_name(f"{base_name}{VOCALS_TAG}.mp3"),
+        instrumental=pair.instrumental.with_name(f"{base_name}{INSTR_TAG}.mp3"),
+        genius_lyrics=pair.vocals.with_name(f"{base_name}{GENIUS_TAG}.txt"),
+        karaoke=pair.vocals.with_name(f"{base_name}{KARAOKE_TAG}.json"),
+    )
 
 
 class App(tk.Tk):
@@ -127,6 +202,12 @@ class App(tk.Tk):
         self._process_log_label: Optional[ttk.Label] = None
         self._process_log_text: Optional[tk.Text] = None
         self._process_settings_window: Optional[tk.Toplevel] = None
+        self._transpose_running = False
+        self._transpose_dialog: Optional[tk.Toplevel] = None
+        self._transpose_progress_window: Optional[tk.Toplevel] = None
+        self._transpose_progress_label: Optional[ttk.Label] = None
+        self._transpose_progress_bar: Optional[ttk.Progressbar] = None
+        self._transpose_thread: Optional[threading.Thread] = None
         self._karaoke_entries: List[KaraokeEntry] = []
         self._karaoke_end_ts: List[float] = []
         self._karaoke_pair: Optional[SongPair] = None
@@ -621,6 +702,14 @@ class App(tk.Tk):
         )
         self.btn_show_file.pack(fill="x", pady=(8, 0))
 
+        self.btn_transpose = ttk.Button(
+            right_inner,
+            text="Transpose",
+            style="Ghost.TButton",
+            command=self._open_transpose_dialog,
+        )
+        self.btn_transpose.pack(fill="x", pady=(8, 0))
+
         self.btn_delete = ttk.Button(
             right_inner,
             text="Delete track",
@@ -661,6 +750,7 @@ class App(tk.Tk):
         state = "normal" if enabled else "disabled"
         self.btn_play.configure(state=state)
         self.btn_show_file.configure(state=state)
+        self.btn_transpose.configure(state=state)
         self.btn_delete.configure(state=state)
         self.seek.configure(state=state)
         self.btn_start_karaoke.configure(state=state)
@@ -680,6 +770,7 @@ class App(tk.Tk):
         self.btn_rescan.configure(state=list_state)
         self.btn_process.configure(state="disabled" if active or self._process_running else "normal")
         self.btn_show_file.configure(state=list_state)
+        self.btn_transpose.configure(state=list_state)
         self.btn_delete.configure(state=list_state)
         self.btn_start_karaoke.configure(state=list_state)
         self.seek.configure(state=list_state)
@@ -1848,6 +1939,304 @@ class App(tk.Tk):
                 f"Could not show file in file manager:\n{target}\n\n{exc}",
             )
 
+    def _close_transpose_dialog(self) -> None:
+        if self._transpose_dialog is not None and self._transpose_dialog.winfo_exists():
+            try:
+                self._transpose_dialog.grab_release()
+            except tk.TclError:
+                pass
+            self._transpose_dialog.destroy()
+        self._transpose_dialog = None
+
+    def _close_transpose_progress_window(self) -> None:
+        progress = self._transpose_progress_bar
+        if progress is not None:
+            try:
+                progress.stop()
+            except tk.TclError:
+                pass
+        if self._transpose_progress_window is not None and self._transpose_progress_window.winfo_exists():
+            try:
+                self._transpose_progress_window.grab_release()
+            except tk.TclError:
+                pass
+            self._transpose_progress_window.destroy()
+        self._transpose_progress_window = None
+        self._transpose_progress_label = None
+        self._transpose_progress_bar = None
+
+    def _set_transpose_progress(self, text: str) -> None:
+        label = self._transpose_progress_label
+        if label is None or not label.winfo_exists():
+            return
+        label.configure(text=text)
+        try:
+            label.update_idletasks()
+        except tk.TclError:
+            pass
+
+    def _transpose_error_details(self, exc: Exception) -> str:
+        if isinstance(exc, FileNotFoundError):
+            return "ffmpeg is required in PATH."
+        if isinstance(exc, subprocess.CalledProcessError):
+            details = (exc.stderr or "").strip()
+            if details:
+                return details
+        return str(exc)
+
+    def _copy_related_file_if_present(self, source: Path, target: Path) -> bool:
+        if not source.is_file():
+            return False
+        shutil.copy2(source, target)
+        return True
+
+    def _fit_dialog_to_content(
+        self, win: tk.Toplevel, *, min_width: int, min_height: int
+    ) -> None:
+        self.update_idletasks()
+        win.update_idletasks()
+        width = max(win.winfo_reqwidth(), min_width)
+        height = max(win.winfo_reqheight(), min_height)
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        parent_w = self.winfo_width()
+        parent_h = self.winfo_height()
+        x = parent_x + max((parent_w - width) // 2, 0)
+        y = parent_y + max((parent_h - height) // 2, 0)
+        win.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _transposed_output_paths(self, pair: SongPair, semitones: int) -> TransposedTrackPaths:
+        attempt = 0
+        while True:
+            paths = _build_transposed_track_paths(pair, semitones, attempt)
+            targets = (paths.vocals, paths.instrumental, paths.genius_lyrics, paths.karaoke)
+            if not any(path.exists() for path in targets):
+                return paths
+            attempt += 1
+
+    def _open_transpose_dialog(self) -> None:
+        if self._recording_active:
+            return
+        if self._loading:
+            return
+        if self._process_running:
+            messagebox.showinfo(
+                "Processing in progress",
+                "Wait until library processing finishes before starting transposition.",
+            )
+            return
+        if self._transpose_running:
+            if self._transpose_progress_window is not None and self._transpose_progress_window.winfo_exists():
+                self._transpose_progress_window.deiconify()
+                self._transpose_progress_window.lift()
+            return
+
+        pair = self._current_pair
+        if pair is None:
+            messagebox.showinfo("No track selected", "Select a track to transpose.")
+            return
+        if not pair.vocals.exists() or not pair.instrumental.exists():
+            messagebox.showerror(
+                "Track files missing",
+                "The selected track is missing one or both MP3 stems. Rescan the library first.",
+            )
+            return
+        if self._transpose_dialog is not None and self._transpose_dialog.winfo_exists():
+            self._transpose_dialog.deiconify()
+            self._transpose_dialog.lift()
+            return
+
+        win = tk.Toplevel(self)
+        self._transpose_dialog = win
+        win.title("Transpose track")
+        win.resizable(False, False)
+        win.transient(self)
+        win.grab_set()
+
+        ttk.Label(
+            win,
+            text=(
+                "Create a duplicate of the current track and shift both MP3 stems "
+                "by the requested number of semitones."
+            ),
+            style="Subtle.TLabel",
+            wraplength=460,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 10))
+
+        form = ttk.Frame(win)
+        form.pack(fill="x", padx=12)
+        form.columnconfigure(1, weight=1)
+
+        semitones_var = tk.StringVar(value="")
+        original_key_var = tk.StringVar(value="")
+        target_key_var = tk.StringVar(value="")
+
+        ttk.Label(form, text="Semitones:", style="Subtle.TLabel").grid(row=0, column=0, sticky="w")
+        semitones_entry = ttk.Entry(form, textvariable=semitones_var, width=16)
+        semitones_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        ttk.Label(form, text="Original key:", style="Subtle.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(10, 0)
+        )
+        original_key_entry = ttk.Entry(form, textvariable=original_key_var, width=16)
+        original_key_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
+
+        ttk.Label(form, text="Transposed key:", style="Subtle.TLabel").grid(
+            row=2, column=0, sticky="w", pady=(10, 0)
+        )
+        ttk.Label(form, textvariable=target_key_var).grid(
+            row=2, column=1, sticky="w", padx=(8, 0), pady=(10, 0)
+        )
+
+        ttk.Label(
+            win,
+            text="Original key is optional and used only for preview (examples: C, F#, Bb, Am).",
+            style="Subtle.TLabel",
+            wraplength=460,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 0))
+
+        def _refresh_target_key(*_args) -> None:
+            raw_key = original_key_var.get().strip()
+            raw_semitones = semitones_var.get().strip()
+            if not raw_key:
+                target_key_var.set("")
+                return
+            try:
+                semitones = int(raw_semitones)
+            except ValueError:
+                target_key_var.set("")
+                return
+            target = _transpose_preview_key(raw_key, semitones)
+            target_key_var.set(target if target else "Invalid")
+
+        semitones_var.trace_add("write", _refresh_target_key)
+        original_key_var.trace_add("write", _refresh_target_key)
+
+        button_row = ttk.Frame(win)
+        button_row.pack(fill="x", padx=12, pady=(16, 12))
+
+        def _cancel() -> None:
+            self._close_transpose_dialog()
+
+        def _start() -> None:
+            raw_semitones = semitones_var.get().strip()
+            try:
+                semitones = int(raw_semitones)
+            except ValueError:
+                messagebox.showerror("Invalid semitones", "Semitones must be a whole number like -3 or +2.")
+                return
+            if semitones == 0:
+                messagebox.showerror("Invalid semitones", "Semitones must be different from 0.")
+                return
+
+            self._close_transpose_dialog()
+            self._start_transpose(pair, semitones)
+
+        ttk.Button(button_row, text="Cancel", command=_cancel).pack(side="right", padx=(8, 0))
+        ttk.Button(button_row, text="OK", style="Accent.TButton", command=_start).pack(side="right")
+
+        win.protocol("WM_DELETE_WINDOW", _cancel)
+        self._fit_dialog_to_content(win, min_width=500, min_height=275)
+        semitones_entry.focus_set()
+        semitones_entry.bind("<Return>", lambda event: _start())
+        original_key_entry.bind("<Return>", lambda event: _start())
+
+    def _start_transpose(self, pair: SongPair, semitones: int) -> None:
+        if self._transpose_running:
+            return
+
+        win = tk.Toplevel(self)
+        self._transpose_progress_window = win
+        win.title("Transposing")
+        win.resizable(False, False)
+        win.transient(self)
+        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        ttk.Label(
+            win,
+            text="Creating a transposed duplicate of the selected track.",
+            style="Subtle.TLabel",
+            wraplength=390,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(14, 8))
+
+        self._transpose_progress_label = ttk.Label(win, text="Preparing...", style="Subtle.TLabel")
+        self._transpose_progress_label.pack(anchor="w", padx=12)
+
+        progress = ttk.Progressbar(win, mode="indeterminate", length=390)
+        progress.pack(fill="x", padx=12, pady=(12, 14))
+        progress.start(12)
+        self._transpose_progress_bar = progress
+        self._fit_dialog_to_content(win, min_width=430, min_height=150)
+
+        self._transpose_running = True
+
+        def worker() -> None:
+            created_paths: List[Path] = []
+            try:
+                paths = self._transposed_output_paths(pair, semitones)
+                self.after(0, lambda: self._set_transpose_progress("Transposing vocals..."))
+                transpose_mp3(pair.vocals, paths.vocals, semitones)
+                created_paths.append(paths.vocals)
+
+                self.after(0, lambda: self._set_transpose_progress("Transposing instrumental..."))
+                transpose_mp3(pair.instrumental, paths.instrumental, semitones)
+                created_paths.append(paths.instrumental)
+
+                self.after(0, lambda: self._set_transpose_progress("Copying lyrics..."))
+                if self._copy_related_file_if_present(
+                    genius_lyrics_path_for_pair(pair), paths.genius_lyrics
+                ):
+                    created_paths.append(paths.genius_lyrics)
+                if self._copy_related_file_if_present(karaoke_path_for_pair(pair), paths.karaoke):
+                    created_paths.append(paths.karaoke)
+            except Exception as exc:
+                for path in reversed(created_paths):
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        pass
+                self.after(0, lambda exc=exc: self._finish_transpose_failure(pair, exc))
+                return
+
+            self.after(0, lambda: self._finish_transpose_success(paths))
+
+        self._transpose_thread = threading.Thread(target=worker, daemon=True)
+        self._transpose_thread.start()
+
+    def _finish_transpose_success(self, paths: TransposedTrackPaths) -> None:
+        self._set_transpose_progress("Rescanning library...")
+        new_track_id = normalize_track_id(paths.vocals)
+
+        self._rescan_track_pairs()
+        self._refresh_filter_options()
+        self.filter_var.set(self._FILTER_ALL)
+        self._current_index = None
+        self._current_pair = None
+        self._current_track_id = new_track_id
+        self._apply_filter()
+        if self._find_item_index_by_track_id(new_track_id) is None and self.search_var.get().strip():
+            self.search_var.set("")
+
+        self._transpose_running = False
+        self._transpose_thread = None
+        self._close_transpose_progress_window()
+        messagebox.showinfo("Transpose complete", f"Created track:\n{paths.base_name}")
+
+    def _finish_transpose_failure(self, pair: SongPair, exc: Exception) -> None:
+        self._transpose_running = False
+        self._transpose_thread = None
+        self._close_transpose_progress_window()
+        messagebox.showerror(
+            "Transpose failed",
+            f"Could not transpose:\n{pair.key}\n\n{self._transpose_error_details(exc)}",
+        )
+
     def _on_select(self, event) -> None:
         if self._ignore_select_event:
             return
@@ -2622,6 +3011,14 @@ class App(tk.Tk):
     def _on_close(self) -> None:
         self._dismiss_track_context_menu()
         self._cancel_karaoke_countdown()
+        self._close_transpose_dialog()
+        if self._transpose_running:
+            messagebox.showinfo(
+                "Transposition in progress",
+                "Wait until the current transposition finishes before closing the app.",
+            )
+            return
+        self._close_transpose_progress_window()
         self._close_process_settings_window()
         if not self._confirm_or_kill_running_process():
             return
