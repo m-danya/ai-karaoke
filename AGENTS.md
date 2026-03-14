@@ -85,8 +85,6 @@ This repo is a Python/Tkinter desktop karaoke app plus an audio-processing CLI.
   - Genius lyrics lookup.
 - `src/ai_karaoke/music_processing/lyrics_align.py`
   - Forced-alignment engine.
-- `src/ai_karaoke/audio-separator-script/*.py`
-  - Thin compatibility wrappers only.
 
 ## Layering rules
 - `ui/*` and `karaoke_screen.py` are for widgets, layout, rendering, and UI event plumbing.

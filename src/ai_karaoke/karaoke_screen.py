@@ -351,7 +351,7 @@ class KaraokeScreen:
             return
         if float(self.k_seek.cget("to")) != dur:
             self.k_seek.configure(to=dur)
-        self.k_time_lbl.configure(text=f"{self._format_time(pos)} / {self._format_time(dur)}")
+        self.k_time_lbl.configure(text=f"{format_time(pos)} / {format_time(dur)}")
         if not seeking:
             self._ignore_seek_events = True
             self.k_seek.set(pos)
@@ -1171,18 +1171,6 @@ class KaraokeScreen:
     def _current_line_text_width(self) -> int:
         return max(240, self._current_line_width() - self._line_pad_x * 2)
 
-    def _format_time(self, sec: float) -> str:
-        return format_time(sec)
-
-    def _scale_value_from_x(self, scale: ttk.Scale, x: int) -> float:
-        return scale_value_from_x(scale, x)
-
-    def _scale_step(self, scale: ttk.Scale, direction: int, step: float = 0.05) -> None:
-        scale_step(scale, direction, step)
-
-    def _wheel_direction(self, event) -> int:
-        return wheel_direction(event)
-
     def _on_seek_drag(self, value: str) -> None:
         if self._ignore_seek_events:
             return
@@ -1203,13 +1191,13 @@ class KaraokeScreen:
     def _on_seek_click(self, event) -> str:
         if str(self.k_seek.cget("state")) == "disabled":
             return "break"
-        self.k_seek.set(self._scale_value_from_x(self.k_seek, event.x))
+        self.k_seek.set(scale_value_from_x(self.k_seek, event.x))
         return "break"
 
     def _on_seek_motion(self, event) -> str:
         if str(self.k_seek.cget("state")) == "disabled":
             return "break"
-        self.k_seek.set(self._scale_value_from_x(self.k_seek, event.x))
+        self.k_seek.set(scale_value_from_x(self.k_seek, event.x))
         return "break"
 
     def _on_v_gain(self, value: str) -> None:
@@ -1225,35 +1213,35 @@ class KaraokeScreen:
     def _on_v_click(self, event) -> str:
         if str(self.k_v_slider.cget("state")) == "disabled":
             return "break"
-        self.k_v_slider.set(self._scale_value_from_x(self.k_v_slider, event.x))
+        self.k_v_slider.set(scale_value_from_x(self.k_v_slider, event.x))
         return "break"
 
     def _on_v_motion(self, event) -> str:
         if str(self.k_v_slider.cget("state")) == "disabled":
             return "break"
-        self.k_v_slider.set(self._scale_value_from_x(self.k_v_slider, event.x))
+        self.k_v_slider.set(scale_value_from_x(self.k_v_slider, event.x))
         return "break"
 
     def _on_i_click(self, event) -> str:
         if str(self.k_i_slider.cget("state")) == "disabled":
             return "break"
-        self.k_i_slider.set(self._scale_value_from_x(self.k_i_slider, event.x))
+        self.k_i_slider.set(scale_value_from_x(self.k_i_slider, event.x))
         return "break"
 
     def _on_i_motion(self, event) -> str:
         if str(self.k_i_slider.cget("state")) == "disabled":
             return "break"
-        self.k_i_slider.set(self._scale_value_from_x(self.k_i_slider, event.x))
+        self.k_i_slider.set(scale_value_from_x(self.k_i_slider, event.x))
         return "break"
 
     def _on_v_wheel(self, event) -> str:
         if str(self.k_v_slider.cget("state")) == "disabled":
             return "break"
-        self._scale_step(self.k_v_slider, self._wheel_direction(event))
+        scale_step(self.k_v_slider, wheel_direction(event))
         return "break"
 
     def _on_i_wheel(self, event) -> str:
         if str(self.k_i_slider.cget("state")) == "disabled":
             return "break"
-        self._scale_step(self.k_i_slider, self._wheel_direction(event))
+        scale_step(self.k_i_slider, wheel_direction(event))
         return "break"

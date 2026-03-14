@@ -17,20 +17,18 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .audio import compute_vocals_env, decode_mp3_to_float32
-from .config import resolve_library_path
 from .controllers.process_runner import MusicProcessRunner
 from .karaoke_screen import KaraokeCallbacks, KaraokeScreen
-from .library import (
+from .library_paths import (
     base_name_for_pair,
     genius_lyrics_path_for_pair,
     karaoke_path_for_pair,
-    load_playlists,
     normalize_track_id,
-    save_playlists,
-    scan_folder,
     track_id_for_pair,
 )
 from .models import ExportMixSettings, KaraokeEntry, SongPair, TrackListItem, TransposedTrackPaths
+from .library_scan import scan_folder
+from .playlist_store import load_playlists, save_playlists
 from .player import PlaybackController
 from .services.export_service import (
     ffmpeg_error_details,
@@ -39,8 +37,8 @@ from .services.export_service import (
 )
 from .services.karaoke_file_service import clean_lyrics_lines, load_karaoke_entries_for_pair
 from .services.system_integration import open_genius_search, show_in_file_manager
-from .services.transpose_service import find_available_transposed_paths, transpose_track_copy
-from .settings import AppSettings
+from .services.transpose_service import transpose_track_copy
+from .settings import AppSettings, resolve_library_path
 from .ui.widgets.formatting import format_time
 from .ui.widgets.scale_helpers import scale_step, scale_value_from_x, wheel_direction
 
@@ -88,6 +86,8 @@ def _transpose_preview_key(raw: str, semitones: int) -> str:
     names = _FLAT_KEY_NAMES if prefer_flats else _SHARP_KEY_NAMES
     note = names[(index + semitones) % 12]
     return f"{note}{'m' if is_minor else ''}"
+
+
 class App(tk.Tk):
     _FILTER_ALL = "All"
     _FILTER_HISTORY = "History"
@@ -415,31 +415,6 @@ class App(tk.Tk):
                 on_toggle_finish_celebration=self._on_toggle_karaoke_finish_celebration,
             ),
         )
-
-    def _parse_bool_config(self, key: str, default: bool) -> bool:
-        value = getattr(self.settings, key, default)
-        return bool(value)
-
-    def _load_karaoke_font_size(self) -> int:
-        return self.settings.karaoke_font_size
-
-    def _load_karaoke_visible_lines(self) -> int:
-        return self.settings.karaoke_visible_lines
-
-    def _load_karaoke_countdown_enabled(self) -> bool:
-        return self._parse_bool_config("karaoke_countdown_enabled", True)
-
-    def _load_karaoke_finish_celebration_enabled(self) -> bool:
-        return self._parse_bool_config("karaoke_finish_celebration_enabled", True)
-
-    def _load_process_jobs(self) -> int:
-        return self.settings.process_jobs
-
-    def _load_process_genius_delay_seconds(self) -> float:
-        return self.settings.process_genius_delay_seconds
-
-    def _load_process_only_align(self) -> bool:
-        return self.settings.process_only_align
 
     def _save_config(self) -> None:
         self.settings.save()
@@ -1618,9 +1593,6 @@ class App(tk.Tk):
         self._rescan_track_pairs()
         self._apply_filter(preserve_index=old_idx)
 
-    def _format_time(self, sec: float) -> str:
-        return format_time(sec)
-
     def _load_pair(self, idx: int) -> None:
         if not self.items:
             return
@@ -1727,11 +1699,6 @@ class App(tk.Tk):
         if pair is None:
             return
         open_genius_search(pair.key)
-
-    def _run_external_command(self, cmd: List[str]) -> bool:
-        from .services.system_integration import run_external_command
-
-        return run_external_command(cmd)
 
     def _show_in_file_manager(self, path: Path) -> None:
         show_in_file_manager(path)
@@ -1926,9 +1893,6 @@ class App(tk.Tk):
         x = parent_x + max((parent_w - width) // 2, 0)
         y = parent_y + max((parent_h - height) // 2, 0)
         win.geometry(f"{width}x{height}+{x}+{y}")
-
-    def _transposed_output_paths(self, pair: SongPair, semitones: int):
-        return find_available_transposed_paths(pair, semitones)
 
     def _save_current_track_as_mp3(self) -> None:
         if self._recording_active:
@@ -2479,61 +2443,52 @@ class App(tk.Tk):
             self._reset_karaoke_finish_state()
             self._update_karaoke_ui()
 
-    def _scale_value_from_x(self, scale: ttk.Scale, x: int) -> float:
-        return scale_value_from_x(scale, x)
-
-    def _scale_step(self, scale: ttk.Scale, direction: int, step: float = 0.05) -> None:
-        scale_step(scale, direction, step)
-
     def _on_seek_click(self, event) -> str:
         if str(self.seek.cget("state")) == "disabled":
             return "break"
-        self.seek.set(self._scale_value_from_x(self.seek, event.x))
+        self.seek.set(scale_value_from_x(self.seek, event.x))
         return "break"
 
     def _on_seek_motion(self, event) -> str:
         if str(self.seek.cget("state")) == "disabled":
             return "break"
-        self.seek.set(self._scale_value_from_x(self.seek, event.x))
+        self.seek.set(scale_value_from_x(self.seek, event.x))
         return "break"
 
     def _on_v_click(self, event) -> str:
         if str(self.v_slider.cget("state")) == "disabled":
             return "break"
-        self.v_slider.set(self._scale_value_from_x(self.v_slider, event.x))
+        self.v_slider.set(scale_value_from_x(self.v_slider, event.x))
         return "break"
 
     def _on_v_motion(self, event) -> str:
         if str(self.v_slider.cget("state")) == "disabled":
             return "break"
-        self.v_slider.set(self._scale_value_from_x(self.v_slider, event.x))
+        self.v_slider.set(scale_value_from_x(self.v_slider, event.x))
         return "break"
 
     def _on_i_click(self, event) -> str:
         if str(self.i_slider.cget("state")) == "disabled":
             return "break"
-        self.i_slider.set(self._scale_value_from_x(self.i_slider, event.x))
+        self.i_slider.set(scale_value_from_x(self.i_slider, event.x))
         return "break"
 
     def _on_i_motion(self, event) -> str:
         if str(self.i_slider.cget("state")) == "disabled":
             return "break"
-        self.i_slider.set(self._scale_value_from_x(self.i_slider, event.x))
+        self.i_slider.set(scale_value_from_x(self.i_slider, event.x))
         return "break"
-
-    def _wheel_direction(self, event) -> int:
-        return wheel_direction(event)
 
     def _on_v_wheel(self, event) -> str:
         if str(self.v_slider.cget("state")) == "disabled":
             return "break"
-        self._scale_step(self.v_slider, self._wheel_direction(event))
+        scale_step(self.v_slider, wheel_direction(event))
         return "break"
 
     def _on_i_wheel(self, event) -> str:
         if str(self.i_slider.cget("state")) == "disabled":
             return "break"
-        self._scale_step(self.i_slider, self._wheel_direction(event))
+        scale_step(self.i_slider, wheel_direction(event))
         return "break"
 
     def _clear_seeking(self) -> None:
@@ -2622,7 +2577,7 @@ class App(tk.Tk):
         dur = self.player.duration_seconds()
         pos = self.player.position_seconds()
         pos = self._apply_karaoke_loop(pos, dur)
-        self.time_lbl.configure(text=f"{self._format_time(pos)} / {self._format_time(dur)}")
+        self.time_lbl.configure(text=f"{format_time(pos)} / {format_time(dur)}")
         if not self._seeking:
             self.seek.set(pos)
         self.btn_play.configure(
@@ -3122,9 +3077,6 @@ class App(tk.Tk):
             self._karaoke_countdown_job = None
         self._karaoke_countdown_value = None
 
-    def _clean_lyrics_lines(self, raw: str) -> List[str]:
-        return clean_lyrics_lines(raw)
-
     def _prompt_lyrics_text(
         self,
         title: str,
@@ -3174,7 +3126,7 @@ class App(tk.Tk):
 
         def on_start() -> None:
             raw = text.get("1.0", "end")
-            lines = self._clean_lyrics_lines(raw)
+            lines = clean_lyrics_lines(raw)
             if not lines:
                 messagebox.showerror("No lyrics", "Paste at least one non-empty lyric line.")
                 return
