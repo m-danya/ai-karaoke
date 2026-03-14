@@ -2713,11 +2713,11 @@ class App(tk.Tk):
         if self._current_pair is None or self._loading:
             return
         if self._karaoke_loop_in is None:
-            self._set_karaoke_loop_message("Set Loop In first.")
+            self._set_karaoke_loop_message("Set In first.")
             return
         loop_out = self.player.position_seconds()
         if loop_out <= self._karaoke_loop_in + self._MIN_KARAOKE_LOOP_SECONDS:
-            self._set_karaoke_loop_message("Loop Out must be after In.")
+            self._set_karaoke_loop_message("Out must be after In.")
             return
         self._karaoke_loop_out = loop_out
         self._karaoke_loop_enabled = True

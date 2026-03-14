@@ -75,7 +75,9 @@ class KaraokeScreen:
         self._button_wide = 22
         self.scope_panel: Optional[ttk.Frame] = None
         self.k_scope: Optional[tk.Canvas] = None
+        self.mix_row: Optional[tk.Frame] = None
         self.record_panel: Optional[ttk.Frame] = None
+        self.tools_panel: Optional[ttk.Frame] = None
         self.k_recording_status: Optional[ttk.Label] = None
         self.k_btn_record_next: Optional[ttk.Button] = None
         self.k_btn_record_break: Optional[ttk.Button] = None
@@ -285,7 +287,9 @@ class KaraokeScreen:
         self._loop_active = False
         self.scope_panel = None
         self.k_scope = None
+        self.mix_row = None
         self.record_panel = None
+        self.tools_panel = None
         self.k_recording_status = None
         self.k_btn_record_next = None
         self.k_btn_record_break = None
@@ -555,7 +559,11 @@ class KaraokeScreen:
         self.bottom_stack.columnconfigure(0, weight=1)
 
         self._build_controls(self.bottom_stack, row=0)
-        self._build_mix(self.bottom_stack, row=1)
+        self.mix_row = tk.Frame(self.bottom_stack, bg=self.colors["bg"])
+        self.mix_row.grid(row=1, column=0, pady=(14, 0))
+        self.mix_row.columnconfigure(0, weight=1)
+        self._build_mix(self.mix_row, row=0)
+        self._build_tools(self.mix_row, row=0)
         self._build_scope(self.bottom_stack, row=2)
         self._record_parent = self.bottom_stack
         self._record_row = 3
@@ -590,93 +598,9 @@ class KaraokeScreen:
         self.k_seek.bind("<Button-1>", self._on_seek_click)
         self.k_seek.bind("<B1-Motion>", self._on_seek_motion)
 
-        self.k_btn_font_smaller = ttk.Button(
-            self.controls_panel,
-            text="A-",
-            command=self.cb.on_font_smaller,
-            width=4,
-        )
-        self.k_btn_font_smaller.grid(row=0, column=3, padx=(10, 6), pady=10)
-
-        self.k_btn_font_larger = ttk.Button(
-            self.controls_panel,
-            text="A+",
-            command=self.cb.on_font_larger,
-            width=4,
-        )
-        self.k_btn_font_larger.grid(row=0, column=4, padx=(0, 8), pady=10)
-
-        self.k_btn_lines_fewer = ttk.Button(
-            self.controls_panel,
-            text="L-",
-            command=self.cb.on_lines_fewer,
-            width=4,
-        )
-        self.k_btn_lines_fewer.grid(row=0, column=5, padx=(0, 6), pady=10)
-
-        self.k_btn_lines_more = ttk.Button(
-            self.controls_panel,
-            text="L+",
-            command=self.cb.on_lines_more,
-            width=4,
-        )
-        self.k_btn_lines_more.grid(row=0, column=6, padx=(0, 8), pady=10)
-
-        self.k_btn_countdown_toggle = ttk.Button(
-            self.controls_panel,
-            text="",
-            command=self.cb.on_toggle_countdown,
-            width=11,
-        )
-        self.k_btn_countdown_toggle.grid(row=0, column=7, padx=(0, 6), pady=10)
-
-        self.k_btn_finish_toggle = ttk.Button(
-            self.controls_panel,
-            text="",
-            command=self.cb.on_toggle_finish_celebration,
-            width=10,
-        )
-        self.k_btn_finish_toggle.grid(row=0, column=8, padx=(0, 8), pady=10)
-
-        self.k_btn_loop_in = ttk.Button(
-            self.controls_panel,
-            text="Loop In",
-            command=self.cb.on_loop_in,
-            width=8,
-        )
-        self.k_btn_loop_in.grid(row=0, column=9, padx=(0, 6), pady=10)
-
-        self.k_btn_loop_out = ttk.Button(
-            self.controls_panel,
-            text="Loop Out",
-            command=self.cb.on_loop_out,
-            width=9,
-        )
-        self.k_btn_loop_out.grid(row=0, column=10, padx=(0, 6), pady=10)
-
-        self.k_btn_loop_clear = ttk.Button(
-            self.controls_panel,
-            text="Clear",
-            command=self.cb.on_loop_clear,
-            width=6,
-        )
-        self.k_btn_loop_clear.grid(row=0, column=11, padx=(0, 8), pady=10)
-
-        self.k_loop_status = tk.Label(
-            self.controls_panel,
-            text="Loop off",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            font=("Fira Sans", 10),
-            anchor="w",
-        )
-        self.k_loop_status.grid(row=0, column=12, sticky="w", padx=(0, 10), pady=10)
-        self._update_toggle_button_texts()
-        self._apply_loop_controls_state()
-
     def _build_mix(self, parent: tk.Frame, row: int) -> None:
         self.mix_panel = ttk.Frame(parent, style="Panel.TFrame", width=self._panel_width)
-        self.mix_panel.grid(row=row, column=0, pady=(14, 0))
+        self.mix_panel.grid(row=row, column=0)
         self.mix_panel.pack_propagate(False)
         self.mix_panel.columnconfigure(1, weight=1)
 
@@ -737,6 +661,118 @@ class KaraokeScreen:
             self.mix_panel, text="100%", command=self.cb.on_i_full, width=self._button_width
         )
         self.k_full_i.grid(row=1, column=3, sticky="ew", pady=(8, 0))
+
+    def _build_tools(self, parent: tk.Frame, row: int) -> None:
+        self.tools_panel = ttk.Frame(parent, style="Panel.TFrame", width=480)
+        self.tools_panel.grid(row=row, column=1, padx=(14, 0), sticky="n")
+        self.tools_panel.pack_propagate(False)
+        for idx in range(8):
+            self.tools_panel.columnconfigure(idx, weight=1)
+
+        self.k_btn_font_smaller = ttk.Button(
+            self.tools_panel,
+            text="A-",
+            command=self.cb.on_font_smaller,
+            width=4,
+        )
+        self.k_btn_font_smaller.grid(row=0, column=0, padx=(10, 4), pady=(10, 6), sticky="ew")
+
+        self.k_btn_font_larger = ttk.Button(
+            self.tools_panel,
+            text="A+",
+            command=self.cb.on_font_larger,
+            width=4,
+        )
+        self.k_btn_font_larger.grid(row=0, column=1, padx=4, pady=(10, 6), sticky="ew")
+
+        self.k_btn_lines_fewer = ttk.Button(
+            self.tools_panel,
+            text="L-",
+            command=self.cb.on_lines_fewer,
+            width=4,
+        )
+        self.k_btn_lines_fewer.grid(row=0, column=2, padx=4, pady=(10, 6), sticky="ew")
+
+        self.k_btn_lines_more = ttk.Button(
+            self.tools_panel,
+            text="L+",
+            command=self.cb.on_lines_more,
+            width=4,
+        )
+        self.k_btn_lines_more.grid(row=0, column=3, padx=4, pady=(10, 6), sticky="ew")
+
+        self.k_btn_countdown_toggle = ttk.Button(
+            self.tools_panel,
+            text="",
+            command=self.cb.on_toggle_countdown,
+            width=11,
+        )
+        self.k_btn_countdown_toggle.grid(
+            row=0,
+            column=4,
+            columnspan=2,
+            padx=4,
+            pady=(10, 6),
+            sticky="ew",
+        )
+
+        self.k_btn_finish_toggle = ttk.Button(
+            self.tools_panel,
+            text="",
+            command=self.cb.on_toggle_finish_celebration,
+            width=10,
+        )
+        self.k_btn_finish_toggle.grid(
+            row=0,
+            column=6,
+            columnspan=2,
+            padx=(4, 10),
+            pady=(10, 6),
+            sticky="ew",
+        )
+
+        self.k_btn_loop_in = ttk.Button(
+            self.tools_panel,
+            text="Loop In",
+            command=self.cb.on_loop_in,
+            width=8,
+        )
+        self.k_btn_loop_in.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            padx=(10, 4),
+            pady=(0, 10),
+            sticky="ew",
+        )
+
+        self.k_btn_loop_out = ttk.Button(
+            self.tools_panel,
+            text="Loop Out",
+            command=self.cb.on_loop_out,
+            width=9,
+        )
+        self.k_btn_loop_out.grid(row=1, column=2, columnspan=2, padx=4, pady=(0, 10), sticky="ew")
+
+        self.k_btn_loop_clear = ttk.Button(
+            self.tools_panel,
+            text="Clear loop",
+            command=self.cb.on_loop_clear,
+            width=6,
+        )
+        self.k_btn_loop_clear.grid(row=1, column=4, padx=4, pady=(0, 10), sticky="ew")
+
+        self.k_loop_status = tk.Label(
+            self.tools_panel,
+            text="Loop off",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            font=("Fira Sans", 10),
+            anchor="center",
+        )
+        self.k_loop_status.grid(row=1, column=5, columnspan=3, sticky="ew", padx=(8, 10), pady=(0, 10))
+        self._update_toggle_button_texts()
+        self._apply_loop_controls_state()
 
     def _build_scope(self, parent: tk.Frame, row: int) -> None:
         self.scope_panel = ttk.Frame(parent, style="Panel.TFrame", width=self._panel_width)
@@ -846,10 +882,16 @@ class KaraokeScreen:
             self.k_recording_status.configure(wraplength=max(500, width - 80))
 
         panel_width = min(self._panel_width, max(640, width - 40))
-        seek_len = max(160, panel_width - 860)
-        vol_len = max(180, int((panel_width - 280) / 2))
+        tools_width = min(max(380, int(panel_width * 0.46)), max(320, panel_width - 280))
+        mix_width = max(260, panel_width - tools_width - 14)
+        seek_len = max(240, panel_width - 260)
+        vol_len = max(120, mix_width - 280)
         self.controls_panel.configure(width=panel_width)
-        self.mix_panel.configure(width=panel_width)
+        if self.mix_row is not None:
+            self.mix_row.configure(width=panel_width)
+        self.mix_panel.configure(width=mix_width)
+        if self.tools_panel is not None:
+            self.tools_panel.configure(width=tools_width)
         if self.scope_panel is not None:
             self.scope_panel.configure(width=panel_width)
             if self.k_scope is not None:
