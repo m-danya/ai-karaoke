@@ -39,6 +39,112 @@ class _CanvasWordItem:
     token: str
 
 
+class _HoverTooltip:
+    def __init__(
+        self,
+        widget: tk.Widget,
+        text: str | Callable[[], str],
+        colors: Dict[str, str],
+        *,
+        delay_ms: int = 350,
+    ) -> None:
+        self.widget = widget
+        self.text = text
+        self.colors = colors
+        self.delay_ms = delay_ms
+        self._show_job: Optional[str] = None
+        self._window: Optional[tk.Toplevel] = None
+
+        self.widget.bind("<Enter>", self._schedule_show, add="+")
+        self.widget.bind("<Leave>", self._hide, add="+")
+        self.widget.bind("<ButtonPress>", self._hide, add="+")
+        self.widget.bind("<Destroy>", self._handle_destroy, add="+")
+
+    def destroy(self) -> None:
+        self._hide()
+
+    def _schedule_show(self, _event=None) -> None:
+        self._cancel_show()
+        if not self._tooltip_text():
+            return
+        try:
+            self._show_job = self.widget.after(self.delay_ms, self._show)
+        except tk.TclError:
+            self._show_job = None
+
+    def _cancel_show(self) -> None:
+        if self._show_job is None:
+            return
+        try:
+            self.widget.after_cancel(self._show_job)
+        except tk.TclError:
+            pass
+        self._show_job = None
+
+    def _show(self) -> None:
+        self._show_job = None
+        try:
+            if not self.widget.winfo_exists() or not self.widget.winfo_viewable():
+                return
+        except tk.TclError:
+            return
+        tooltip_text = self._tooltip_text()
+        if not tooltip_text:
+            return
+        if self._window is not None and self._window.winfo_exists():
+            return
+
+        win = tk.Toplevel(self.widget)
+        self._window = win
+        win.withdraw()
+        win.wm_overrideredirect(True)
+        try:
+            win.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        win.configure(bg=self.colors["panel_border"])
+
+        label = tk.Label(
+            win,
+            text=tooltip_text,
+            justify="left",
+            wraplength=260,
+            bg=self.colors["panel"],
+            fg=self.colors["text"],
+            font=("Fira Sans", 10),
+            relief="solid",
+            borderwidth=1,
+            padx=10,
+            pady=6,
+        )
+        label.pack()
+
+        win.update_idletasks()
+        x = self.widget.winfo_rootx() + max(0, (self.widget.winfo_width() - win.winfo_reqwidth()) // 2)
+        y = self.widget.winfo_rooty() - win.winfo_reqheight() - 8
+        if y < 0:
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        win.geometry(f"+{x}+{y}")
+        win.deiconify()
+
+    def _hide(self, _event=None) -> None:
+        self._cancel_show()
+        if self._window is None:
+            return
+        try:
+            self._window.destroy()
+        except tk.TclError:
+            pass
+        self._window = None
+
+    def _handle_destroy(self, _event=None) -> None:
+        self._hide()
+
+    def _tooltip_text(self) -> str:
+        value = self.text() if callable(self.text) else self.text
+        return str(value).strip()
+
+
 class KaraokeScreen:
     _MIN_VISIBLE_LINES = 1
     _MAX_VISIBLE_LINES = 7
@@ -128,6 +234,7 @@ class KaraokeScreen:
         self._slot_word_items: list[list[_CanvasWordItem]] = []
         self._display_slot_lines: tuple[str, ...] = tuple("" for _ in range(self._visible_line_count))
         self._display_active_slot = 0
+        self._tooltips: list[_HoverTooltip] = []
 
     def _clamp_visible_lines(self, count: int) -> int:
         return max(self._MIN_VISIBLE_LINES, min(self._MAX_VISIBLE_LINES, int(count)))
@@ -319,6 +426,9 @@ class KaraokeScreen:
         self._slot_word_items = []
         self._display_slot_lines = tuple("" for _ in range(self._visible_line_count))
         self._display_active_slot = 0
+        for tooltip in self._tooltips:
+            tooltip.destroy()
+        self._tooltips = []
 
     def _apply_loop_controls_state(self) -> None:
         base_state = "normal" if self._play_controls_enabled and self.mode != "record" else "disabled"
@@ -568,6 +678,19 @@ class KaraokeScreen:
         self._record_parent = self.bottom_stack
         self._record_row = 3
 
+    def _attach_tooltip(self, widget: tk.Widget, text: str | Callable[[], str]) -> None:
+        self._tooltips.append(_HoverTooltip(widget, text, self.colors))
+
+    def _line_count_tooltip(self, increasing: bool) -> str:
+        current = self._visible_line_count
+        if increasing:
+            return (
+                f"Show more lyric lines at once. Current lines: {current}. "
+                "If you increase the number of lines, you will likely need to reduce the font size "
+                "(buttons on the left) so everything fits."
+            )
+        return f"Show fewer lyric lines at once. Current lines: {current}."
+
     def _build_controls(self, parent: tk.Frame, row: int) -> None:
         self.controls_panel = ttk.Frame(parent, style="Panel.TFrame", width=self._panel_width)
         self.controls_panel.grid(row=row, column=0, pady=0)
@@ -676,6 +799,7 @@ class KaraokeScreen:
             width=4,
         )
         self.k_btn_font_smaller.grid(row=0, column=0, padx=(10, 4), pady=(10, 6), sticky="ew")
+        self._attach_tooltip(self.k_btn_font_smaller, "Make karaoke lyrics smaller.")
 
         self.k_btn_font_larger = ttk.Button(
             self.tools_panel,
@@ -684,6 +808,7 @@ class KaraokeScreen:
             width=4,
         )
         self.k_btn_font_larger.grid(row=0, column=1, padx=4, pady=(10, 6), sticky="ew")
+        self._attach_tooltip(self.k_btn_font_larger, "Make karaoke lyrics larger.")
 
         self.k_btn_lines_fewer = ttk.Button(
             self.tools_panel,
@@ -692,6 +817,7 @@ class KaraokeScreen:
             width=4,
         )
         self.k_btn_lines_fewer.grid(row=0, column=2, padx=4, pady=(10, 6), sticky="ew")
+        self._attach_tooltip(self.k_btn_lines_fewer, lambda: self._line_count_tooltip(False))
 
         self.k_btn_lines_more = ttk.Button(
             self.tools_panel,
@@ -700,6 +826,7 @@ class KaraokeScreen:
             width=4,
         )
         self.k_btn_lines_more.grid(row=0, column=3, padx=4, pady=(10, 6), sticky="ew")
+        self._attach_tooltip(self.k_btn_lines_more, lambda: self._line_count_tooltip(True))
 
         self.k_btn_countdown_toggle = ttk.Button(
             self.tools_panel,
@@ -714,6 +841,10 @@ class KaraokeScreen:
             padx=4,
             pady=(10, 6),
             sticky="ew",
+        )
+        self._attach_tooltip(
+            self.k_btn_countdown_toggle,
+            "Turn the countdown before karaoke starts on or off.",
         )
 
         self.k_btn_finish_toggle = ttk.Button(
@@ -730,6 +861,10 @@ class KaraokeScreen:
             pady=(10, 6),
             sticky="ew",
         )
+        self._attach_tooltip(
+            self.k_btn_finish_toggle,
+            "Turn the end-of-song finish message on or off.",
+        )
 
         self.k_btn_loop_in = ttk.Button(
             self.tools_panel,
@@ -745,6 +880,7 @@ class KaraokeScreen:
             pady=(0, 10),
             sticky="ew",
         )
+        self._attach_tooltip(self.k_btn_loop_in, "Set the loop start at the current position.")
 
         self.k_btn_loop_out = ttk.Button(
             self.tools_panel,
@@ -753,6 +889,10 @@ class KaraokeScreen:
             width=9,
         )
         self.k_btn_loop_out.grid(row=1, column=2, columnspan=2, padx=4, pady=(0, 10), sticky="ew")
+        self._attach_tooltip(
+            self.k_btn_loop_out,
+            "Set the loop end at the current position and loop that section.",
+        )
 
         self.k_btn_loop_clear = ttk.Button(
             self.tools_panel,
@@ -761,6 +901,7 @@ class KaraokeScreen:
             width=6,
         )
         self.k_btn_loop_clear.grid(row=1, column=4, padx=4, pady=(0, 10), sticky="ew")
+        self._attach_tooltip(self.k_btn_loop_clear, "Clear the loop points and stop looping.")
 
         self.k_loop_status = tk.Label(
             self.tools_panel,
