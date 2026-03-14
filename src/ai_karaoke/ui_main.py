@@ -146,6 +146,7 @@ class App(tk.Tk):
     _FILTER_ALL = "All"
     _FILTER_HISTORY = "History"
     _RESERVED_FILTERS = {_FILTER_ALL, _FILTER_HISTORY}
+    _MIN_KARAOKE_LOOP_SECONDS = 0.25
     _KARAOKE_FINISH_SOUND = (
         Path(__file__).resolve().parents[2]
         / "data/dragon-studio-crowd-cheer-and-applause-406644.mp3"
@@ -234,6 +235,11 @@ class App(tk.Tk):
         self._karaoke_finish_announced = False
         self._karaoke_finish_sound_pcm: Optional[np.ndarray] = None
         self._karaoke_finish_sound_load_failed = False
+        self._karaoke_loop_in: Optional[float] = None
+        self._karaoke_loop_out: Optional[float] = None
+        self._karaoke_loop_enabled = False
+        self._karaoke_loop_message: Optional[str] = None
+        self._karaoke_loop_message_job: Optional[str] = None
 
         self.search_var = tk.StringVar()
         self.filter_var = tk.StringVar(value=self._FILTER_ALL)
@@ -408,6 +414,9 @@ class App(tk.Tk):
                 on_exit_request=self._exit_fullscreen,
                 on_play_toggle=self._toggle_play_pause,
                 on_seek=self._on_karaoke_seek,
+                on_loop_in=self._on_karaoke_loop_in,
+                on_loop_out=self._on_karaoke_loop_out,
+                on_loop_clear=self._on_karaoke_loop_clear,
                 on_v_gain=self._on_karaoke_v_gain,
                 on_i_gain=self._on_karaoke_i_gain,
                 on_v_mute=self._mute_vocals,
@@ -902,6 +911,7 @@ class App(tk.Tk):
         self.listbox.selection_clear(0, "end")
         self._load_token += 1
         self._loading = False
+        self._reset_karaoke_loop()
         if self.player.playing or self.player.is_fading_out():
             self.player.pause()
         self.player.stop()
@@ -929,6 +939,7 @@ class App(tk.Tk):
         self._select_single_index(idx)
         self._load_token += 1
         self._loading = False
+        self._reset_karaoke_loop()
         if self.player.playing or self.player.is_fading_out():
             self.player.pause()
         self.player.stop()
@@ -1795,6 +1806,7 @@ class App(tk.Tk):
 
         self._current_pair = pair
         self._reset_karaoke_finish_state()
+        self._reset_karaoke_loop()
         self._update_karaoke_button_visibility()
         self.player.pause()
         self.player.stop()
@@ -2596,6 +2608,12 @@ class App(tk.Tk):
         if self.player.playing and not self.player.is_fading_out():
             self.player.pause()
         else:
+            if self._is_karaoke_loop_active():
+                loop_in = float(self._karaoke_loop_in or 0.0)
+                loop_out = float(self._karaoke_loop_out or loop_in)
+                pos = self.player.position_seconds()
+                if pos < loop_in or pos >= loop_out - 0.01:
+                    self._seek_karaoke_position(loop_in, reset_finish=False)
             self.player.start()
             self._autoplay_armed = True
 
@@ -2669,11 +2687,49 @@ class App(tk.Tk):
         # Let UI updater clear seeking after a short delay.
         self.after(200, self._clear_seeking)
 
-    def _on_karaoke_seek(self, value: float) -> None:
+    def _seek_karaoke_position(self, value: float, *, reset_finish: bool = True) -> float:
         self._karaoke_idx_hint = None
         self._karaoke_idx_hint_t = 0.0
-        self._reset_karaoke_finish_state()
+        if reset_finish:
+            self._reset_karaoke_finish_state()
         self.player.seek_seconds(float(value))
+        pos = self.player.position_seconds()
+        self.seek.set(pos)
+        return pos
+
+    def _on_karaoke_seek(self, value: float) -> None:
+        self._seek_karaoke_position(value)
+
+    def _on_karaoke_loop_in(self) -> None:
+        if self._current_pair is None or self._loading:
+            return
+        self._karaoke_loop_in = self.player.position_seconds()
+        self._karaoke_loop_out = None
+        self._karaoke_loop_enabled = False
+        self._clear_karaoke_loop_message()
+        self._update_karaoke_ui()
+
+    def _on_karaoke_loop_out(self) -> None:
+        if self._current_pair is None or self._loading:
+            return
+        if self._karaoke_loop_in is None:
+            self._set_karaoke_loop_message("Set Loop In first.")
+            return
+        loop_out = self.player.position_seconds()
+        if loop_out <= self._karaoke_loop_in + self._MIN_KARAOKE_LOOP_SECONDS:
+            self._set_karaoke_loop_message("Loop Out must be after In.")
+            return
+        self._karaoke_loop_out = loop_out
+        self._karaoke_loop_enabled = True
+        self._clear_karaoke_loop_message()
+        self._seek_karaoke_position(self._karaoke_loop_in, reset_finish=False)
+        self._update_karaoke_ui()
+
+    def _on_karaoke_loop_clear(self) -> None:
+        if self._karaoke_loop_in is None:
+            return
+        self._reset_karaoke_loop()
+        self._update_karaoke_ui()
 
     def _adjust_karaoke_font_size(self, delta: int) -> None:
         target = max(20, min(72, self._karaoke_font_size + int(delta)))
@@ -2869,6 +2925,7 @@ class App(tk.Tk):
     def _update_ui(self) -> None:
         dur = self.player.duration_seconds()
         pos = self.player.position_seconds()
+        pos = self._apply_karaoke_loop(pos, dur)
         self.time_lbl.configure(text=f"{self._format_time(pos)} / {self._format_time(dur)}")
         if not self._seeking:
             self.seek.set(pos)
@@ -2976,6 +3033,80 @@ class App(tk.Tk):
         self._karaoke_finish_message = None
         self._karaoke_finish_announced = False
 
+    def _clear_karaoke_loop_message(self) -> None:
+        if self._karaoke_loop_message_job is not None:
+            try:
+                self.after_cancel(self._karaoke_loop_message_job)
+            except tk.TclError:
+                pass
+        self._karaoke_loop_message_job = None
+        self._karaoke_loop_message = None
+
+    def _set_karaoke_loop_message(self, text: str, ttl_ms: int = 1800) -> None:
+        self._clear_karaoke_loop_message()
+        self._karaoke_loop_message = text
+        self._karaoke_loop_message_job = self.after(ttl_ms, self._clear_karaoke_loop_message)
+        self._update_karaoke_ui()
+
+    def _reset_karaoke_loop(self) -> None:
+        self._karaoke_loop_in = None
+        self._karaoke_loop_out = None
+        self._karaoke_loop_enabled = False
+        self._clear_karaoke_loop_message()
+
+    def _is_karaoke_loop_active(self) -> bool:
+        return (
+            self.karaoke.is_open()
+            and self.karaoke.mode == "play"
+            and self._karaoke_loop_enabled
+            and self._karaoke_loop_in is not None
+            and self._karaoke_loop_out is not None
+            and self._karaoke_loop_out > self._karaoke_loop_in + self._MIN_KARAOKE_LOOP_SECONDS
+        )
+
+    def _karaoke_loop_start_position(self) -> float:
+        if self._is_karaoke_loop_active() and self._karaoke_loop_in is not None:
+            return self._karaoke_loop_in
+        return 0.0
+
+    def _format_loop_time(self, sec: float) -> str:
+        deciseconds = int(round(max(0.0, sec) * 10))
+        minutes = deciseconds // 600
+        seconds = (deciseconds % 600) / 10.0
+        return f"{minutes:02d}:{seconds:04.1f}"
+
+    def _karaoke_loop_status_text(self) -> str:
+        if self._karaoke_loop_message:
+            return self._karaoke_loop_message
+        if self._karaoke_loop_in is None:
+            return "Loop off"
+        loop_in = self._format_loop_time(self._karaoke_loop_in)
+        if not self._karaoke_loop_enabled or self._karaoke_loop_out is None:
+            return f"In {loop_in}"
+        loop_out = self._format_loop_time(self._karaoke_loop_out)
+        return f"{loop_in} - {loop_out}"
+
+    def _apply_karaoke_loop(self, pos: float, dur: float) -> float:
+        if not self._is_karaoke_loop_active():
+            return pos
+        loop_in = float(self._karaoke_loop_in or 0.0)
+        loop_out = float(self._karaoke_loop_out or loop_in)
+        if pos < loop_out - 0.01:
+            return pos
+        track_ended = (
+            self._last_playing
+            and not self.player.playing
+            and not self.player.is_fading_out()
+            and self._is_track_end_reached(dur, pos)
+        )
+        if not self.player.playing and not track_ended:
+            return pos
+        pos = self._seek_karaoke_position(loop_in, reset_finish=False)
+        if track_ended:
+            self.player.start()
+            self._autoplay_armed = True
+        return pos
+
     def _play_next_track(self) -> None:
         if not self.items or self._current_index is None:
             return
@@ -2993,6 +3124,7 @@ class App(tk.Tk):
         self._karaoke_idx_hint = None
         self._karaoke_idx_hint_t = 0.0
         self._reset_karaoke_finish_state()
+        self._reset_karaoke_loop()
 
     def _parse_karaoke_words(
         self,
@@ -3284,6 +3416,12 @@ class App(tk.Tk):
             self.player.mix.vocals_muted,
             self.player.mix.instr_muted,
         )
+        self.karaoke.update_loop_state(
+            self._karaoke_loop_in,
+            self._karaoke_loop_out,
+            self._karaoke_loop_enabled,
+            self._karaoke_loop_status_text(),
+        )
         if self._recording_active:
             slot_lines, active_slot = self._recording_display_lines()
             self.karaoke.update_lines(slot_lines, active_slot)
@@ -3375,10 +3513,7 @@ class App(tk.Tk):
         if self.player.playing or self.player.is_fading_out():
             self.player.pause()
         self.player.stop()
-        self.player.seek_seconds(0.0)
-        self.seek.set(0.0)
-        self._karaoke_idx_hint = None
-        self._karaoke_idx_hint_t = 0.0
+        self._seek_karaoke_position(self._karaoke_loop_start_position(), reset_finish=False)
         self.player.set_vocals_gain(1.0, smooth=False)
         self.player.set_instr_gain(1.0, smooth=False)
         self.player.set_vocals_muted(True, smooth=False)
@@ -3392,10 +3527,7 @@ class App(tk.Tk):
         if value <= 0:
             self._karaoke_countdown_value = None
             self._karaoke_countdown_job = None
-            self.player.seek_seconds(0.0)
-            self.seek.set(0.0)
-            self._karaoke_idx_hint = None
-            self._karaoke_idx_hint_t = 0.0
+            self._seek_karaoke_position(self._karaoke_loop_start_position(), reset_finish=False)
             self.player.start()
             self._autoplay_armed = True
             self._add_current_track_to_history()

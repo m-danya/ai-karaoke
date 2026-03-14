@@ -12,6 +12,9 @@ class KaraokeCallbacks:
     on_exit_request: Callable[[], None]
     on_play_toggle: Callable[[], None]
     on_seek: Callable[[float], None]
+    on_loop_in: Callable[[], None]
+    on_loop_out: Callable[[], None]
+    on_loop_clear: Callable[[], None]
     on_v_gain: Callable[[float], None]
     on_i_gain: Callable[[float], None]
     on_v_mute: Callable[[], None]
@@ -61,8 +64,12 @@ class KaraokeScreen:
         self._ignore_gain_events = False
         self._seeking = False
         self._clear_seek_job: Optional[str] = None
+        self._play_controls_enabled = True
+        self._loop_has_start = False
+        self._loop_has_range = False
+        self._loop_active = False
 
-        self._panel_width = 900
+        self._panel_width = 1100
         self._record_pack = {"pady": (14, 0)}
         self._button_width = 12
         self._button_wide = 22
@@ -78,6 +85,10 @@ class KaraokeScreen:
         self.k_btn_lines_more: Optional[ttk.Button] = None
         self.k_btn_countdown_toggle: Optional[ttk.Button] = None
         self.k_btn_finish_toggle: Optional[ttk.Button] = None
+        self.k_btn_loop_in: Optional[ttk.Button] = None
+        self.k_btn_loop_out: Optional[ttk.Button] = None
+        self.k_btn_loop_clear: Optional[ttk.Button] = None
+        self.k_loop_status: Optional[tk.Label] = None
         self.k_song_title: Optional[tk.Label] = None
         self._song_title_text = ""
         self._lines_container: Optional[tk.Frame] = None
@@ -163,6 +174,23 @@ class KaraokeScreen:
         self._finish_celebration_enabled = bool(enabled)
         self._update_toggle_button_texts()
 
+    def update_loop_state(
+        self,
+        loop_in: float | None,
+        loop_out: float | None,
+        enabled: bool,
+        status_text: str,
+    ) -> None:
+        self._loop_has_start = loop_in is not None
+        self._loop_has_range = loop_out is not None
+        self._loop_active = bool(enabled and loop_in is not None and loop_out is not None)
+        if not self._ready or not self.is_open():
+            return
+        self._apply_loop_controls_state()
+        if self.k_loop_status is not None:
+            color = self.colors["karaoke"] if self._loop_active else self.colors["muted"]
+            self.k_loop_status.configure(text=status_text, fg=color)
+
     def _update_toggle_button_texts(self) -> None:
         countdown_state = "ON" if self._countdown_enabled else "OFF"
         finish_state = "ON" if self._finish_celebration_enabled else "OFF"
@@ -237,6 +265,7 @@ class KaraokeScreen:
                     pass
         else:
             self._set_record_panel_visible(False)
+        self._apply_loop_controls_state()
 
     def close(self) -> None:
         if self.window is None:
@@ -250,6 +279,10 @@ class KaraokeScreen:
         self._ready = False
         self._seeking = False
         self._clear_seek_job = None
+        self._play_controls_enabled = True
+        self._loop_has_start = False
+        self._loop_has_range = False
+        self._loop_active = False
         self.scope_panel = None
         self.k_scope = None
         self.record_panel = None
@@ -262,6 +295,10 @@ class KaraokeScreen:
         self.k_btn_lines_more = None
         self.k_btn_countdown_toggle = None
         self.k_btn_finish_toggle = None
+        self.k_btn_loop_in = None
+        self.k_btn_loop_out = None
+        self.k_btn_loop_clear = None
+        self.k_loop_status = None
         self.k_song_title = None
         self._song_title_text = ""
         self._lines_container = None
@@ -278,6 +315,19 @@ class KaraokeScreen:
         self._slot_word_items = []
         self._display_slot_lines = tuple("" for _ in range(self._visible_line_count))
         self._display_active_slot = 0
+
+    def _apply_loop_controls_state(self) -> None:
+        base_state = "normal" if self._play_controls_enabled and self.mode != "record" else "disabled"
+        if self.k_btn_loop_in is not None:
+            self.k_btn_loop_in.configure(state=base_state)
+        if self.k_btn_loop_out is not None:
+            self.k_btn_loop_out.configure(
+                state=base_state if base_state == "normal" and self._loop_has_start else "disabled"
+            )
+        if self.k_btn_loop_clear is not None:
+            self.k_btn_loop_clear.configure(
+                state=base_state if base_state == "normal" and self._loop_has_start else "disabled"
+            )
 
     def _normalize_slot_lines(self, slot_lines: Sequence[str]) -> tuple[str, ...]:
         count = self._visible_line_count
@@ -392,6 +442,7 @@ class KaraokeScreen:
     def set_play_controls_enabled(self, enabled: bool) -> None:
         if not self._ready or not self.is_open():
             return
+        self._play_controls_enabled = bool(enabled)
         state = "normal" if enabled else "disabled"
         self.k_btn_play.configure(state=state)
         self.k_seek.configure(state=state)
@@ -399,6 +450,7 @@ class KaraokeScreen:
             self.k_btn_countdown_toggle.configure(state=state)
         if self.k_btn_finish_toggle is not None:
             self.k_btn_finish_toggle.configure(state=state)
+        self._apply_loop_controls_state()
 
     def set_song_title(self, title: str) -> None:
         normalized = str(title).strip()
@@ -585,7 +637,42 @@ class KaraokeScreen:
             width=10,
         )
         self.k_btn_finish_toggle.grid(row=0, column=8, padx=(0, 8), pady=10)
+
+        self.k_btn_loop_in = ttk.Button(
+            self.controls_panel,
+            text="Loop In",
+            command=self.cb.on_loop_in,
+            width=8,
+        )
+        self.k_btn_loop_in.grid(row=0, column=9, padx=(0, 6), pady=10)
+
+        self.k_btn_loop_out = ttk.Button(
+            self.controls_panel,
+            text="Loop Out",
+            command=self.cb.on_loop_out,
+            width=9,
+        )
+        self.k_btn_loop_out.grid(row=0, column=10, padx=(0, 6), pady=10)
+
+        self.k_btn_loop_clear = ttk.Button(
+            self.controls_panel,
+            text="Clear",
+            command=self.cb.on_loop_clear,
+            width=6,
+        )
+        self.k_btn_loop_clear.grid(row=0, column=11, padx=(0, 8), pady=10)
+
+        self.k_loop_status = tk.Label(
+            self.controls_panel,
+            text="Loop off",
+            bg=self.colors["panel"],
+            fg=self.colors["muted"],
+            font=("Fira Sans", 10),
+            anchor="w",
+        )
+        self.k_loop_status.grid(row=0, column=12, sticky="w", padx=(0, 10), pady=10)
         self._update_toggle_button_texts()
+        self._apply_loop_controls_state()
 
     def _build_mix(self, parent: tk.Frame, row: int) -> None:
         self.mix_panel = ttk.Frame(parent, style="Panel.TFrame", width=self._panel_width)
@@ -759,7 +846,7 @@ class KaraokeScreen:
             self.k_recording_status.configure(wraplength=max(500, width - 80))
 
         panel_width = min(self._panel_width, max(640, width - 40))
-        seek_len = max(220, panel_width - 620)
+        seek_len = max(160, panel_width - 860)
         vol_len = max(180, int((panel_width - 280) / 2))
         self.controls_panel.configure(width=panel_width)
         self.mix_panel.configure(width=panel_width)
