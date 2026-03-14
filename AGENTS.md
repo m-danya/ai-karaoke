@@ -1,99 +1,153 @@
 # Repository Guide for Agents
 
-This repo is a Python/Tkinter desktop app for playing two-stem MP3s (vocals + instrumental).
+This repo is a Python/Tkinter desktop karaoke app plus an audio-processing CLI.
 
 ## Quick start
 - Install deps: `uv sync`
-- Run app: `uv run ai-karaoke`
-- Library path is stored in `~/.config/ai_karaoke.json` under `library_path`.
-- `ffmpeg` must be available in `PATH` for decoding.
+- Run desktop app: `uv run ai-karaoke`
+- Run processing CLI: `uv run ai-karaoke-process --help`
+- Library path is stored in `~/.config/ai_karaoke.json`
+- `ffmpeg` must be available in `PATH`
 
-## Structure (high level)
-- `src/ai_karaoke/` — main application package
-- `assets/` — icons and artwork (used by desktop entry)
-- `ai-karaoke.desktop` — Linux desktop entry template
-- `src/ai_karaoke/audio-separator-script/` — helper scripts for preparing stems
-- `build/` — build artifacts
-- `recording-description.md` — karaoke recording notes
-- `README.md` — install/run notes
+## Current architecture
 
-## Package layout (`src/ai_karaoke/`)
-- `app.py` — entrypoint; reads config and launches UI (`ai_karaoke.app:main`)
-- `ui_main.py` — main Tkinter UI (library list, transport, mixer, karaoke recording)
-- `player.py` — playback controller + mix state (position, gains, mute state)
-- `engine.py` — low-level audio engine (sounddevice callback + mixing)
-- `audio.py` — decoding and analysis helpers (ffmpeg decode, vocals envelope)
-- `library.py` — library scanning, karaoke path helpers, playlists/history persistence
-- `config.py` — config load/save + library path resolution
-- `models.py` — dataclasses (e.g., `SongPair`)
-- `constants.py` — app constants (tags, defaults, config path)
-- `karaoke_screen.py` — fullscreen karaoke UI (currently not wired in)
+### Entrypoints
+- `src/ai_karaoke/app.py`
+  - Desktop bootstrap.
+  - Loads `AppSettings`, resolves library path, launches `App`.
+- `src/ai_karaoke/ui_main.py`
+  - Compatibility facade for the main window.
+  - Still contains a lot of orchestration, but shared logic has been extracted.
+- `src/ai_karaoke/music_processing/main.py`
+  - Compatibility CLI facade.
+  - Re-exports the old orchestration surface from smaller modules.
 
-## Playlists + history (agent notes)
-- Playlists are called `playlists` in code/UI.
-- Storage location: inside current music library folder as `.ai_karaoke_playlists.json`.
-- File schema:
+### Core runtime modules
+- `src/ai_karaoke/player.py`
+  - Playback controller and mix state.
+- `src/ai_karaoke/engine.py`
+  - Low-level `sounddevice` output engine.
+- `src/ai_karaoke/audio.py`
+  - ffmpeg-backed decode/transcode/mix helpers.
+- `src/ai_karaoke/models.py`
+  - Shared typed models for song pairs, track list items, export settings, karaoke entries.
+- `src/ai_karaoke/settings.py`
+  - Typed application settings and config persistence.
+
+### Library/storage modules
+- `src/ai_karaoke/library_scan.py`
+  - Finds vocals/instrumental pairs in the library.
+- `src/ai_karaoke/library_paths.py`
+  - Shared path helpers for karaoke/genius/track-id/base-name logic.
+- `src/ai_karaoke/playlist_store.py`
+  - Reads/writes playlists and history.
+- `src/ai_karaoke/library.py`
+  - Compatibility facade exporting the old library API.
+
+### UI/shared helper modules
+- `src/ai_karaoke/karaoke_screen.py`
+  - Fullscreen karaoke UI facade.
+- `src/ai_karaoke/ui/widgets/formatting.py`
+  - Shared formatting helpers such as `format_time`.
+- `src/ai_karaoke/ui/widgets/scale_helpers.py`
+  - Shared slider/scroll math used by both windows.
+- `src/ai_karaoke/ui/karaoke/tooltips.py`
+  - Shared hover tooltip widget for karaoke UI.
+
+### Services
+- `src/ai_karaoke/services/karaoke_file_service.py`
+  - Karaoke JSON load/normalize logic and shared `clean_lyrics_lines`.
+- `src/ai_karaoke/services/export_service.py`
+  - MP3 render orchestration and export destination validation.
+- `src/ai_karaoke/services/transpose_service.py`
+  - Transposed-track creation and rollback.
+- `src/ai_karaoke/services/system_integration.py`
+  - File manager and browser integration.
+
+### Controllers
+- `src/ai_karaoke/controllers/process_runner.py`
+  - Subprocess/thread/queue lifecycle for the music-processing runner.
+
+### Music processing pipeline
+- `src/ai_karaoke/music_processing/cli.py`
+  - Argument parsing.
+- `src/ai_karaoke/music_processing/pipeline.py`
+  - Top-level orchestration.
+- `src/ai_karaoke/music_processing/separation.py`
+  - Stem separation worker flow.
+- `src/ai_karaoke/music_processing/alignment_pipeline.py`
+  - Karaoke alignment orchestration.
+- `src/ai_karaoke/music_processing/cache.py`
+  - Model cache and warmup.
+- `src/ai_karaoke/music_processing/io_paths.py`
+  - Processing path/suffix helpers.
+- `src/ai_karaoke/music_processing/genius_fetch.py`
+  - Genius lyrics lookup.
+- `src/ai_karaoke/music_processing/lyrics_align.py`
+  - Forced-alignment engine.
+- `src/ai_karaoke/audio-separator-script/*.py`
+  - Thin compatibility wrappers only.
+
+## Layering rules
+- `ui/*` and `karaoke_screen.py` are for widgets, layout, rendering, and UI event plumbing.
+- `controllers/*` are for orchestration between UI and long-running side effects.
+- `services/*` are for reusable side-effectful or domain-specific operations.
+- `models.py` and typed data objects must stay UI-agnostic.
+- `music_processing/*` must stay decoupled from desktop UI modules.
+- `library_paths.py` is the shared source of truth for karaoke/genius/track-id path conventions.
+- `settings.py` is the shared source of truth for persisted app settings.
+
+## Do not put new logic in these places
+- Do not add new domain logic directly into `ui_main.py` if it can live in `services/*` or `controllers/*`.
+- Do not duplicate helper logic between `ui_main.py` and `karaoke_screen.py`.
+- Do not reintroduce config parsing into UI classes; use `AppSettings`.
+- Do not put playlist/history storage logic back into widgets.
+- Do not put music-processing orchestration back into `music_processing/main.py`.
+- Do not use `import *` outside the existing compatibility wrapper files.
+
+## Playlists and history
+- Storage file: `.ai_karaoke_playlists.json` in the current library folder.
+- Schema:
   - `playlists`: object `{playlist_name: [track_id, ...]}`
   - `history`: array `[track_id, ...]`
-- `track_id` is relative path to the vocals stem file (relative to library folder).
-- UI filter options are `All`, `History`, plus dynamic playlist names.
-- `History` is updated automatically when karaoke playback starts.
-- Missing tracks in playlist/history views are shown in red and must not be playable.
+- Stored ids are relative when possible; runtime ids are normalized absolute paths.
+- UI filters are `All`, `History`, plus dynamic playlist names.
+- Missing tracks in playlist/history views must stay visible, red, and non-playable.
+- `History` is updated when karaoke playback starts.
 
-## Design intent
-- UI logic lives in `ui_main.py`.
-- Playback/state logic lives in `player.py`/`engine.py`.
-- This split is deliberate to allow a second fullscreen screen to reuse the same playback controller without duplicating logic.
+## Karaoke JSON format
+- File suffix: `_(Karaoke Lyrics).json`
+- JSON value: array of objects
+  - `line`
+  - `start_ts`
+  - `end_ts`
+  - `words`: array of `{word, start_ts, end_ts}`
+- Keep format backward compatible.
+- Shared line cleaning lives in `services/karaoke_file_service.py`.
 
-## Notes for changes
-- Keep `ai_karaoke.app:main` as the entrypoint (pyproject references it).
-- Avoid cross-import cycles: UI should depend on `player.py`, not vice versa.
-- Use `rg` to search quickly.
-- For regular UI text labels, do not add a contrasting background block; text should blend into the parent container.
-
-## Audio separator + lyrics alignment (agent notes)
-- Main helper pipeline lives in `src/ai_karaoke/audio-separator-script/main.py`:
-  - `separate_mp3s(...)` -> `fetch_missing_genius_lyrics(...)` -> `process_genius_lyrics(...)`.
-- CLI supports align-only mode:
-  - `--only-align` skips separation/fetch and regenerates karaoke JSON from existing `_(Genius Lyrics).txt`.
-- Alignment implementation is in `src/ai_karaoke/audio-separator-script/lyrics_align.py` (`LyricsAligner`).
-- Generated karaoke file format (`_(Karaoke Lyrics).json`):
-  - JSON array of objects:
-    - `line`: original lyric line
-    - `start_ts`: line start time (seconds)
-    - `end_ts`: line end time (seconds)
-    - `words`: per-word timings, each item has `word`, `start_ts`, `end_ts`
-
-## Alignment warning format (what to expect in logs)
-- Failed alignment:
+## Processing CLI notes
+- Preserve `ai_karaoke.music_processing.main:main` as the CLI entrypoint.
+- `--only-align` must keep working.
+- Alignment warnings should keep their current wording shape:
   - `Warning: alignment failed for <lyrics_path>: <exception>`
-- Empty result:
   - `Warning: alignment produced no segments for <lyrics_path>`
-- Count mismatch (non-fatal):
   - `Warning: word count mismatch for <lyrics_path> (expected X, got Y)`
 
-## Alignment troubleshooting checklist
-1. Confirm matching vocals exists for the lyrics file (`_find_vocals_for_lyrics` in `main.py`).
-2. Inspect cleaned text from `clean_lyrics_lines(...)` (empty/bracket-only lyrics are skipped).
-3. Check language auto-detection in `LyricsAligner._resolve_language(...)`.
-4. For Cyrillic lyrics, ensure `romanize=True` is used (language must resolve to `rus`).
-5. Reproduce on one file first, then rerun batch.
+## Known implementation decisions
+- Correct Cyrillic detection regex is `re.compile(r"[\u0400-\u04FF]")`.
+- Keep `_get_alignments_safe(...)` in `lyrics_align.py`.
+- Keep token sanitization aligned with the tokenizer dictionary.
+- Keep `ui_main.py` and `music_processing/main.py` as compatibility facades unless explicitly asked to break imports.
 
-## Known pitfalls and decisions
-- Critical regex pitfall (already fixed):
-  - Correct Cyrillic detection regex is `re.compile(r"[\u0400-\u04FF]")`.
-  - Wrong escaping like `r"[\\u0400-\\u04FF]"` breaks detection and causes frequent `"<star> != <char>"` assertion failures.
-- Keep `_get_alignments_safe(...)` wrapper in `lyrics_align.py`:
-  - Upstream `ctc_forced_aligner.get_alignments(...)` can fail with MMS model on `<star>` id bounds.
-  - Current wrapper aligns dictionary ids with emission vocab size and avoids those crashes.
-  - Do not replace it with raw README flow unless validated on the current model/version.
-- Keep token sanitization in sync with alignment dictionary:
-  - English/mixed lyrics can contain characters not in tokenizer vocab (`-`, `` ` ``, `—`, etc.).
-  - If unknown chars are dropped only for `targets` but not for `tokens_starred`, `get_spans` may fail with mismatches like `w != -`.
-  - `_sanitize_tokens(...)` must be applied before both forced-align targets and span reconstruction.
+## Change guidance
+- Prefer extending existing services/controllers before adding more logic to the `App` class.
+- When adding a new reusable helper, put it in a dedicated module instead of duplicating it locally.
+- When changing path conventions, update `library_paths.py` and every caller through that module.
+- When changing karaoke file semantics, update both desktop loading and processing generation paths.
+- When changing subprocess behavior, keep Linux process-group kill semantics intact.
 
-## Quick smoke-check commands (audio-separator-script)
+## Quick smoke checks
 - Syntax check:
-  - `uv run python -m py_compile src/ai_karaoke/music_processing/lyrics_align.py src/ai_karaoke/music_processing/main.py`
-- Single-file alignment check (adjust paths):
-  - `uv run python -c "from pathlib import Path; from ai_karaoke.music_processing.lyrics_align import LyricsAligner, clean_lyrics_lines; l=Path('..._(Genius Lyrics).txt'); v=Path('..._(Vocals).mp3'); t=' '.join(clean_lyrics_lines(l.read_text(encoding='utf-8'))); print(len(LyricsAligner().align_word_segments(v,t)))"`
+  - `python3 -m py_compile $(find src/ai_karaoke -name '*.py' -print)`
+- Import smoke check in venv:
+  - `./.venv/bin/python -c "import ai_karaoke.app, ai_karaoke.ui_main, ai_karaoke.karaoke_screen, ai_karaoke.music_processing.main"`

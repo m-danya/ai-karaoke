@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
-import re
 
 import numpy as np
 import torch
@@ -17,6 +17,8 @@ from ctc_forced_aligner import (
     postprocess_results,
     preprocess_text,
 )
+
+from ai_karaoke.services.karaoke_file_service import clean_lyrics_lines
 
 DEFAULT_MODEL = "MahmoudAshraf/mms-300m-1130-forced-aligner"
 CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
@@ -150,20 +152,6 @@ class LyricsAligner:
             chars = [ch for ch in token.split(" ") if ch in dictionary]
             sanitized.append(" ".join(chars))
         return sanitized
-
-
-def clean_lyrics_lines(raw: str) -> List[str]:
-    lines: List[str] = []
-    for line in raw.splitlines():
-        cleaned = line.strip()
-        if not cleaned:
-            continue
-        if cleaned.startswith("["):
-            continue
-        lines.append(cleaned)
-    return lines
-
-
 def build_karaoke_entries(lines: List[str], word_segments: List[dict]) -> List[dict]:
     entries: List[dict] = []
     word_idx = 0
