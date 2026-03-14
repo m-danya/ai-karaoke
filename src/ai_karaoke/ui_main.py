@@ -1789,7 +1789,8 @@ class App(tk.Tk):
 
         confirm = messagebox.askyesno(
             "Delete track",
-            "Delete the selected track files?\n\nThis will permanently remove both MP3 stems.",
+            "Delete the selected track files?\n\n"
+            "This will permanently remove both MP3 stems and any related lyrics files.",
             icon="warning",
         )
         if not confirm:
@@ -1800,7 +1801,12 @@ class App(tk.Tk):
         self.player.stop()
 
         errors: List[str] = []
-        for path in (pair.vocals, pair.instrumental):
+        for path in (
+            pair.vocals,
+            pair.instrumental,
+            genius_lyrics_path_for_pair(pair),
+            karaoke_path_for_pair(pair),
+        ):
             try:
                 path.unlink()
             except FileNotFoundError:
