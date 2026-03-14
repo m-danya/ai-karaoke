@@ -181,7 +181,7 @@ class KaraokeScreen:
         self._button_wide = 22
         self.scope_panel: Optional[ttk.Frame] = None
         self.k_scope: Optional[tk.Canvas] = None
-        self.mix_row: Optional[tk.Frame] = None
+        self.mix_row: Optional[ttk.Frame] = None
         self.record_panel: Optional[ttk.Frame] = None
         self.tools_panel: Optional[ttk.Frame] = None
         self.k_recording_status: Optional[ttk.Label] = None
@@ -196,11 +196,11 @@ class KaraokeScreen:
         self.k_btn_loop_in: Optional[ttk.Button] = None
         self.k_btn_loop_out: Optional[ttk.Button] = None
         self.k_btn_loop_clear: Optional[ttk.Button] = None
-        self.k_loop_status: Optional[tk.Label] = None
-        self.k_song_title: Optional[tk.Label] = None
+        self.k_loop_status: Optional[ttk.Label] = None
+        self.k_song_title: Optional[ttk.Label] = None
         self._song_title_text = ""
         self._lines_container: Optional[tk.Frame] = None
-        self._record_parent: Optional[tk.Frame] = None
+        self._record_parent: Optional[ttk.Frame] = None
         self._record_row: int = 0
         self.k_current_line: Optional[tk.Frame] = None
         self._line_slots: list[tk.Frame] = []
@@ -298,7 +298,7 @@ class KaraokeScreen:
         self._apply_loop_controls_state()
         if self.k_loop_status is not None:
             color = self.colors["karaoke"] if self._loop_active else self.colors["muted"]
-            self.k_loop_status.configure(text=status_text, fg=color)
+            self.k_loop_status.configure(text=status_text, foreground=color)
 
     def _update_toggle_button_texts(self) -> None:
         countdown_state = "ON" if self._countdown_enabled else "OFF"
@@ -591,12 +591,10 @@ class KaraokeScreen:
         center.rowconfigure(0, weight=0)
         center.rowconfigure(1, weight=1)
         center.rowconfigure(3, weight=1)
-        self.k_song_title = tk.Label(
+        self.k_song_title = ttk.Label(
             center,
             text=self._song_title_text,
-            font=("Fira Sans", 18, "bold"),
-            bg=self.colors["bg"],
-            fg=self.colors["text"],
+            style="SongTitle.TLabel",
             justify="center",
             anchor="center",
         )
@@ -664,12 +662,12 @@ class KaraokeScreen:
         bottom = tk.Frame(parent, bg=self.colors["bg"])
         bottom.grid(row=2, column=0, sticky="ew", padx=28, pady=(8, 22))
 
-        self.bottom_stack = tk.Frame(bottom, bg=self.colors["bg"])
+        self.bottom_stack = ttk.Frame(bottom, style="Panel.TFrame", padding=12)
         self.bottom_stack.pack(anchor="center")
         self.bottom_stack.columnconfigure(0, weight=1)
 
         self._build_controls(self.bottom_stack, row=0)
-        self.mix_row = tk.Frame(self.bottom_stack, bg=self.colors["bg"])
+        self.mix_row = ttk.Frame(self.bottom_stack, style="Panel.TFrame")
         self.mix_row.grid(row=1, column=0, pady=(14, 0))
         self.mix_row.columnconfigure(0, weight=1)
         self._build_mix(self.mix_row, row=0)
@@ -706,7 +704,7 @@ class KaraokeScreen:
         )
         self.k_btn_play.grid(row=0, column=0, padx=(0, 12), pady=10)
 
-        self.k_time_lbl = ttk.Label(self.controls_panel, text="00:00 / 00:00", style="Subtle.TLabel")
+        self.k_time_lbl = ttk.Label(self.controls_panel, text="00:00 / 00:00", style="Panel.Subtle.TLabel")
         self.k_time_lbl.grid(row=0, column=1, sticky="w", pady=10)
 
         self.k_seek = ttk.Scale(
@@ -727,7 +725,9 @@ class KaraokeScreen:
         self.mix_panel.pack_propagate(False)
         self.mix_panel.columnconfigure(1, weight=1)
 
-        ttk.Label(self.mix_panel, text="Vocals", style="Subtle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.mix_panel, text="Vocals", style="Panel.Subtle.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
         self.k_v_slider = ttk.Scale(
             self.mix_panel,
             from_=0.0,
@@ -755,7 +755,7 @@ class KaraokeScreen:
         )
         self.k_full_v.grid(row=0, column=3, sticky="ew")
 
-        ttk.Label(self.mix_panel, text="Instrumental", style="Subtle.TLabel").grid(
+        ttk.Label(self.mix_panel, text="Instrumental", style="Panel.Subtle.TLabel").grid(
             row=1, column=0, sticky="w", pady=(8, 0)
         )
         self.k_i_slider = ttk.Scale(
@@ -903,12 +903,10 @@ class KaraokeScreen:
         self.k_btn_loop_clear.grid(row=1, column=4, padx=4, pady=(0, 10), sticky="ew")
         self._attach_tooltip(self.k_btn_loop_clear, "Clear the loop points and stop looping.")
 
-        self.k_loop_status = tk.Label(
+        self.k_loop_status = ttk.Label(
             self.tools_panel,
             text="Loop off",
-            bg=self.colors["panel"],
-            fg=self.colors["muted"],
-            font=("Fira Sans", 10),
+            style="Panel.Status.TLabel",
             anchor="center",
         )
         self.k_loop_status.grid(row=1, column=5, columnspan=3, sticky="ew", padx=(8, 10), pady=(0, 10))
@@ -921,7 +919,7 @@ class KaraokeScreen:
         self.scope_panel.pack_propagate(False)
         self.scope_panel.columnconfigure(0, weight=1)
 
-        ttk.Label(self.scope_panel, text="Vocals (next 10s)", style="Subtle.TLabel").grid(
+        ttk.Label(self.scope_panel, text="Vocals (next 10s)", style="Panel.Subtle.TLabel").grid(
             row=0, column=0, sticky="w", padx=10, pady=(8, 4)
         )
         self.k_scope = tk.Canvas(
@@ -949,7 +947,7 @@ class KaraokeScreen:
         self.k_recording_status = ttk.Label(
             record_panel,
             text="",
-            style="Subtle.TLabel",
+            style="Panel.Subtle.TLabel",
             wraplength=1000,
             justify="left",
         )

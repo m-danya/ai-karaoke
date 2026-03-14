@@ -304,6 +304,12 @@ class App(tk.Tk):
             font=("Playfair Display", 20, "bold"),
         )
         style.configure(
+            "SongTitle.TLabel",
+            background=self.colors["bg"],
+            foreground=self.colors["text"],
+            font=("Fira Sans", 18, "bold"),
+        )
+        style.configure(
             "Subtle.TLabel",
             background=self.colors["bg"],
             foreground=self.colors["muted"],
@@ -313,6 +319,38 @@ class App(tk.Tk):
             background=self.colors["panel"],
             foreground=self.colors["muted"],
             font=("Fira Sans", 10, "bold"),
+        )
+        style.configure(
+            "Panel.TLabel",
+            background=self.colors["panel"],
+            foreground=self.colors["text"],
+        )
+        style.configure(
+            "Panel.Subtle.TLabel",
+            background=self.colors["panel"],
+            foreground=self.colors["muted"],
+        )
+        style.configure(
+            "Panel.Section.TLabel",
+            background=self.colors["panel"],
+            foreground=self.colors["muted"],
+            font=("Fira Sans", 10, "bold"),
+        )
+        style.configure(
+            "Panel.Status.TLabel",
+            background=self.colors["panel"],
+            foreground=self.colors["muted"],
+            font=("Fira Sans", 10),
+        )
+        style.configure(
+            "Panel.TCheckbutton",
+            background=self.colors["panel"],
+            foreground=self.colors["text"],
+        )
+        style.map(
+            "Panel.TCheckbutton",
+            background=[("active", self.colors["panel"])],
+            foreground=[("disabled", self.colors["muted"])],
         )
 
         style.configure(
@@ -556,7 +594,7 @@ class App(tk.Tk):
         library_row = ttk.Frame(left_inner, style="Panel.TFrame")
         library_row.pack(fill="x")
 
-        ttk.Label(library_row, text="Library", style="Subtle.TLabel").pack(side="left", anchor="w")
+        ttk.Label(library_row, text="Library", style="Panel.Subtle.TLabel").pack(side="left", anchor="w")
 
         self.library_entry = ttk.Entry(library_row, textvariable=self.library_var)
         self.library_entry.pack(side="left", fill="x", expand=True, padx=(10, 8))
@@ -591,11 +629,12 @@ class App(tk.Tk):
         self.autoplay_chk = ttk.Checkbutton(
             autoplay_row,
             text="Autoplay",
+            style="Panel.TCheckbutton",
             variable=self.autoplay_var,
         )
         self.autoplay_chk.pack(side="left")
 
-        ttk.Label(left_inner, text="Tracks", style="Section.TLabel").pack(anchor="w", pady=(12, 4))
+        ttk.Label(left_inner, text="Tracks", style="Panel.Section.TLabel").pack(anchor="w", pady=(12, 4))
 
         search_row = ttk.Frame(left_inner, style="Panel.TFrame")
         search_row.pack(fill="x", pady=(0, 8))
@@ -603,7 +642,7 @@ class App(tk.Tk):
         self.search = ttk.Entry(search_row, textvariable=self.search_var)
         self.search.pack(side="left", fill="x", expand=True)
         self.search_var.trace_add("write", self._on_search_change)
-        ttk.Label(search_row, text="Filter", style="Subtle.TLabel").pack(side="left", padx=(8, 6))
+        ttk.Label(search_row, text="Filter", style="Panel.Subtle.TLabel").pack(side="left", padx=(8, 6))
         self.filter_combo = ttk.Combobox(
             search_row,
             textvariable=self.filter_var,
@@ -646,7 +685,7 @@ class App(tk.Tk):
         self.btn_play = ttk.Button(transport, text="Play", style="Accent.TButton", command=self._toggle_play_pause)
         self.btn_play.pack(side="left")
 
-        self.time_lbl = ttk.Label(transport, text="00:00 / 00:00", style="Subtle.TLabel")
+        self.time_lbl = ttk.Label(transport, text="00:00 / 00:00", style="Panel.Subtle.TLabel")
         self.time_lbl.pack(side="right")
 
         self.seek = ttk.Scale(
@@ -665,8 +704,8 @@ class App(tk.Tk):
         right_inner = ttk.Frame(right, padding=14, style="Panel.TFrame")
         right_inner.pack(fill="x", anchor="n")
 
-        ttk.Label(right_inner, text="Mix", style="Section.TLabel").pack(anchor="w", pady=(0, 8))
-        ttk.Label(right_inner, text="Vocals", style="Subtle.TLabel").pack(anchor="w")
+        ttk.Label(right_inner, text="Mix", style="Panel.Section.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(right_inner, text="Vocals", style="Panel.Subtle.TLabel").pack(anchor="w")
         self.v_slider = ttk.Scale(
             right_inner,
             from_=0.0,
@@ -690,7 +729,7 @@ class App(tk.Tk):
         self.full_v = ttk.Button(v_btn_row, text="100%", command=self._set_v_full)
         self.full_v.pack(side="left", expand=True, fill="x")
 
-        ttk.Label(right_inner, text="Instrumental", style="Subtle.TLabel").pack(anchor="w", pady=(8, 0))
+        ttk.Label(right_inner, text="Instrumental", style="Panel.Subtle.TLabel").pack(anchor="w", pady=(8, 0))
         self.i_slider = ttk.Scale(
             right_inner,
             from_=0.0,
@@ -750,7 +789,7 @@ class App(tk.Tk):
         )
         self.btn_delete.pack(fill="x", pady=(8, 0))
 
-        ttk.Label(right_inner, text="Vocals (next 10s)", style="Subtle.TLabel").pack(anchor="w", pady=(10, 4))
+        ttk.Label(right_inner, text="Vocals (next 10s)", style="Panel.Subtle.TLabel").pack(anchor="w", pady=(10, 4))
         self.vocal_scope = tk.Canvas(
             right_inner,
             height=80,

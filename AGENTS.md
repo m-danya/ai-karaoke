@@ -49,6 +49,7 @@ This repo is a Python/Tkinter desktop app for playing two-stem MP3s (vocals + in
 - Keep `ai_karaoke.app:main` as the entrypoint (pyproject references it).
 - Avoid cross-import cycles: UI should depend on `player.py`, not vice versa.
 - Use `rg` to search quickly.
+- For regular UI text labels, do not add a contrasting background block; text should blend into the parent container.
 
 ## Audio separator + lyrics alignment (agent notes)
 - Main helper pipeline lives in `src/ai_karaoke/audio-separator-script/main.py`:
