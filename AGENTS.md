@@ -143,6 +143,7 @@ This repo is a Python/Tkinter desktop karaoke app plus an audio-processing CLI.
 - When changing path conventions, update `library_paths.py` and every caller through that module.
 - When changing karaoke file semantics, update both desktop loading and processing generation paths.
 - When changing subprocess behavior, keep Linux process-group kill semantics intact.
+- In cross-platform app code, do not hardcode OS-specific filesystem paths, font locations, or platform-only tooling unless the code is explicitly guarded per platform and there is no shared abstraction available.
 
 ## Quick smoke checks
 - Syntax check:

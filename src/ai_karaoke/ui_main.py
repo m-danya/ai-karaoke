@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from bisect import bisect_right
 import random
 import re
 import subprocess
@@ -26,7 +25,16 @@ from .library_paths import (
     normalize_track_id,
     track_id_for_pair,
 )
-from .models import ExportMixSettings, KaraokeEntry, SongPair, TrackListItem, TransposedTrackPaths
+from .models import (
+    ExportMixSettings,
+    KaraokeEntry,
+    KaraokeRenderSettings,
+    SongPair,
+    TrackListItem,
+    TransposedTrackPaths,
+    VideoAspectRatio,
+    VideoExportSettings,
+)
 from .library_scan import scan_folder
 from .playlist_store import load_playlists, save_playlists
 from .player import PlaybackController
@@ -35,9 +43,16 @@ from .services.export_service import (
     render_mix_to_mp3,
     validate_export_destination,
 )
+from .services.karaoke_timeline_service import (
+    countdown_frame_state,
+    finish_frame_state,
+    karaoke_end_timestamps,
+    karaoke_frame_state,
+)
 from .services.karaoke_file_service import clean_lyrics_lines, load_karaoke_entries_for_pair
 from .services.system_integration import open_genius_search, show_in_file_manager
 from .services.transpose_service import transpose_track_copy
+from .services.video_export_service import render_karaoke_to_mp4, validate_video_export_destination
 from .settings import AppSettings, resolve_library_path
 from .ui.widgets.formatting import format_time
 from .ui.widgets.scale_helpers import scale_step, scale_value_from_x, wheel_direction
@@ -46,6 +61,7 @@ from .ui.widgets.scale_helpers import scale_step, scale_value_from_x, wheel_dire
 _KEY_INPUT_RE = re.compile(r"^\s*([A-Ga-g])([#b]?)(m?)\s*$")
 _SHARP_KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 _FLAT_KEY_NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+_MP4_EXPORT_FPS = 12
 _KEY_NAME_TO_INDEX = {
     "C": 0,
     "C#": 1,
@@ -168,6 +184,11 @@ class App(tk.Tk):
         self._save_mp3_progress_label: Optional[ttk.Label] = None
         self._save_mp3_progress_bar: Optional[ttk.Progressbar] = None
         self._save_mp3_thread: Optional[threading.Thread] = None
+        self._save_mp4_running = False
+        self._save_mp4_progress_window: Optional[tk.Toplevel] = None
+        self._save_mp4_progress_label: Optional[ttk.Label] = None
+        self._save_mp4_progress_bar: Optional[ttk.Progressbar] = None
+        self._save_mp4_thread: Optional[threading.Thread] = None
         self._karaoke_entries: List[KaraokeEntry] = []
         self._karaoke_end_ts: List[float] = []
         self._karaoke_pair: Optional[SongPair] = None
@@ -668,6 +689,14 @@ class App(tk.Tk):
         )
         self.btn_save_mp3.pack(fill="x", pady=(8, 0))
 
+        self.btn_save_mp4 = ttk.Button(
+            right_inner,
+            text="Save as mp4",
+            style="Ghost.TButton",
+            command=self._save_current_track_as_mp4,
+        )
+        self.btn_save_mp4.pack(fill="x", pady=(8, 0))
+
         self.btn_delete = ttk.Button(
             right_inner,
             text="Delete track",
@@ -710,6 +739,7 @@ class App(tk.Tk):
         self.btn_show_file.configure(state=state)
         self.btn_transpose.configure(state=state)
         self.btn_save_mp3.configure(state=state)
+        self.btn_save_mp4.configure(state=state)
         self.btn_delete.configure(state=state)
         self.seek.configure(state=state)
         self.btn_start_karaoke.configure(state=state)
@@ -731,6 +761,7 @@ class App(tk.Tk):
         self.btn_show_file.configure(state=list_state)
         self.btn_transpose.configure(state=list_state)
         self.btn_save_mp3.configure(state=list_state)
+        self.btn_save_mp4.configure(state=list_state)
         self.btn_delete.configure(state=list_state)
         self.btn_start_karaoke.configure(state=list_state)
         self.seek.configure(state=list_state)
@@ -1823,6 +1854,33 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
+    def _close_save_mp4_progress_window(self) -> None:
+        progress = self._save_mp4_progress_bar
+        if progress is not None:
+            try:
+                progress.stop()
+            except tk.TclError:
+                pass
+        if self._save_mp4_progress_window is not None and self._save_mp4_progress_window.winfo_exists():
+            try:
+                self._save_mp4_progress_window.grab_release()
+            except tk.TclError:
+                pass
+            self._save_mp4_progress_window.destroy()
+        self._save_mp4_progress_window = None
+        self._save_mp4_progress_label = None
+        self._save_mp4_progress_bar = None
+
+    def _set_save_mp4_progress(self, text: str) -> None:
+        label = self._save_mp4_progress_label
+        if label is None or not label.winfo_exists():
+            return
+        label.configure(text=text)
+        try:
+            label.update_idletasks()
+        except tk.TclError:
+            pass
+
     def _close_transpose_dialog(self) -> None:
         if self._transpose_dialog is not None and self._transpose_dialog.winfo_exists():
             try:
@@ -1879,6 +1937,188 @@ class App(tk.Tk):
             instr_muted=False,
         )
 
+    def _video_export_settings(
+        self,
+        aspect_ratio: VideoAspectRatio,
+        *,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+    ) -> VideoExportSettings:
+        if aspect_ratio == "custom":
+            if width is None or height is None:
+                raise ValueError("Custom MP4 export requires width and height.")
+            return VideoExportSettings(
+                label="custom",
+                aspect_ratio=f"{width}x{height}",
+                width=width,
+                height=height,
+                fps=_MP4_EXPORT_FPS,
+            )
+        if aspect_ratio == "ultrawide":
+            return VideoExportSettings(
+                label="ultrawide",
+                aspect_ratio=aspect_ratio,
+                width=3440,
+                height=1440,
+                fps=_MP4_EXPORT_FPS,
+            )
+        return VideoExportSettings(
+            label="16:9",
+            aspect_ratio="16:9",
+            width=1920,
+            height=1080,
+            fps=_MP4_EXPORT_FPS,
+        )
+
+    def _current_karaoke_render_settings(self) -> KaraokeRenderSettings:
+        try:
+            tk_scaling = float(self.tk.call("tk", "scaling"))
+        except (tk.TclError, ValueError):
+            tk_scaling = 1.0
+        return KaraokeRenderSettings(
+            font_size=self._karaoke_font_size,
+            visible_lines=self._karaoke_visible_lines,
+            countdown_enabled=self._karaoke_countdown_enabled,
+            finish_celebration_enabled=self._karaoke_finish_celebration_enabled,
+            tk_scaling=max(1.0, tk_scaling),
+            lyrics_font_family=self.karaoke.lyrics_font_family(),
+            title_font_family=self.karaoke.title_font_family(),
+            footer_font_family=self.karaoke.footer_font_family(),
+        )
+
+    def _ask_save_mp4_video_settings(self) -> Optional[VideoExportSettings]:
+        result: dict[str, Optional[VideoExportSettings]] = {"choice": None}
+        dialog = tk.Toplevel(self)
+        dialog.title("Save as mp4")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text=(
+                "Choose MP4 export resolution.\n"
+                "The export uses instrumental audio only (0% vocals, 100% instrumental) "
+                "and renders the karaoke scene with the current karaoke settings."
+            ),
+            style="Subtle.TLabel",
+            justify="left",
+            wraplength=460,
+        ).pack(anchor="w", padx=12, pady=(14, 10))
+
+        aspect_var = tk.StringVar(value="16:9")
+        custom_width_var = tk.StringVar(value=str(self.winfo_screenwidth()))
+        custom_height_var = tk.StringVar(value=str(self.winfo_screenheight()))
+
+        form = ttk.Frame(dialog)
+        form.pack(fill="x", padx=12, pady=(0, 10))
+        form.columnconfigure(1, weight=1)
+        form.columnconfigure(3, weight=1)
+
+        ttk.Radiobutton(
+            form,
+            text="16:9 (1920x1080)",
+            value="16:9",
+            variable=aspect_var,
+        ).grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Radiobutton(
+            form,
+            text="ultrawide (3440x1440)",
+            value="ultrawide",
+            variable=aspect_var,
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Radiobutton(
+            form,
+            text="Custom resolution",
+            value="custom",
+            variable=aspect_var,
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(10, 0))
+
+        ttk.Label(form, text="Width:", style="Subtle.TLabel").grid(
+            row=3, column=0, sticky="w", padx=(24, 0), pady=(8, 0)
+        )
+        width_entry = ttk.Entry(form, textvariable=custom_width_var, width=12)
+        width_entry.grid(row=3, column=1, sticky="w", padx=(8, 20), pady=(8, 0))
+
+        ttk.Label(form, text="Height:", style="Subtle.TLabel").grid(
+            row=3, column=2, sticky="w", pady=(8, 0)
+        )
+        height_entry = ttk.Entry(form, textvariable=custom_height_var, width=12)
+        height_entry.grid(row=3, column=3, sticky="w", padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(
+            dialog,
+            text="Custom width and height must be whole even numbers.",
+            style="Subtle.TLabel",
+            justify="left",
+            wraplength=460,
+        ).pack(anchor="w", padx=12, pady=(0, 12))
+
+        button_row = ttk.Frame(dialog)
+        button_row.pack(fill="x", padx=12, pady=(0, 14))
+
+        def _choose(choice: Optional[VideoExportSettings]) -> None:
+            result["choice"] = choice
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
+        def _parse_dimension(raw: str, label: str) -> int:
+            try:
+                value = int(raw.strip())
+            except ValueError as exc:
+                raise ValueError(f"{label} must be a whole number.") from exc
+            if value < 2:
+                raise ValueError(f"{label} must be at least 2.")
+            if value % 2 != 0:
+                raise ValueError(f"{label} must be an even number.")
+            return value
+
+        def _update_custom_resolution_state(*_args) -> None:
+            state = "normal" if aspect_var.get() == "custom" else "disabled"
+            width_entry.configure(state=state)
+            height_entry.configure(state=state)
+
+        def _confirm() -> None:
+            choice = aspect_var.get().strip()
+            try:
+                if choice == "custom":
+                    video_settings = self._video_export_settings(
+                        "custom",
+                        width=_parse_dimension(custom_width_var.get(), "Width"),
+                        height=_parse_dimension(custom_height_var.get(), "Height"),
+                    )
+                elif choice in {"16:9", "ultrawide"}:
+                    video_settings = self._video_export_settings(choice)
+                else:
+                    return
+            except ValueError as exc:
+                messagebox.showerror("Invalid resolution", str(exc), parent=dialog)
+                return
+            _choose(video_settings)
+
+        aspect_var.trace_add("write", _update_custom_resolution_state)
+        _update_custom_resolution_state()
+
+        ttk.Button(button_row, text="Cancel", command=lambda: _choose(None)).pack(side="right", padx=(8, 0))
+        ok_btn = ttk.Button(
+            button_row,
+            text="OK",
+            style="Accent.TButton",
+            command=_confirm,
+        )
+        ok_btn.pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: _choose(None))
+        self._fit_dialog_to_content(dialog, min_width=500, min_height=275)
+        ok_btn.focus_set()
+        width_entry.bind("<Return>", lambda event: _confirm())
+        height_entry.bind("<Return>", lambda event: _confirm())
+        self.wait_window(dialog)
+        return result["choice"]
+
     def _fit_dialog_to_content(
         self, win: tk.Toplevel, *, min_width: int, min_height: int
     ) -> None:
@@ -1903,6 +2143,12 @@ class App(tk.Tk):
             messagebox.showinfo(
                 "Processing in progress",
                 "Wait until library processing finishes before saving an MP3.",
+            )
+            return
+        if self._save_mp4_running:
+            messagebox.showinfo(
+                "MP4 export in progress",
+                "Wait until the current MP4 export finishes before saving an MP3.",
             )
             return
         if self._transpose_running:
@@ -1956,6 +2202,102 @@ class App(tk.Tk):
 
         self._start_save_mp3(pair, target, mix_settings)
 
+    def _save_current_track_as_mp4(self) -> None:
+        if self._recording_active:
+            return
+        if self._loading:
+            return
+        if self._process_running:
+            messagebox.showinfo(
+                "Processing in progress",
+                "Wait until library processing finishes before saving an MP4.",
+            )
+            return
+        if self._transpose_running:
+            messagebox.showinfo(
+                "Transposition in progress",
+                "Wait until the current transposition finishes before saving an MP4.",
+            )
+            return
+        if self._save_mp3_running:
+            messagebox.showinfo(
+                "MP3 export in progress",
+                "Wait until the current MP3 export finishes before saving an MP4.",
+            )
+            return
+        if self._save_mp4_running:
+            if self._save_mp4_progress_window is not None and self._save_mp4_progress_window.winfo_exists():
+                self._save_mp4_progress_window.deiconify()
+                self._save_mp4_progress_window.lift()
+            return
+
+        pair = self._current_pair
+        if pair is None:
+            messagebox.showinfo("No track selected", "Select a track to save.")
+            return
+        if not pair.vocals.exists() or not pair.instrumental.exists():
+            messagebox.showerror(
+                "Track files missing",
+                "The selected track is missing one or both MP3 stems. Rescan the library first.",
+            )
+            return
+
+        karaoke_path = karaoke_path_for_pair(pair)
+        if not karaoke_path.exists():
+            messagebox.showinfo("Karaoke not found", "No karaoke file found for this track.")
+            return
+        try:
+            entries = load_karaoke_entries_for_pair(pair)
+        except FileNotFoundError:
+            messagebox.showinfo("Karaoke not found", "No karaoke file found for this track.")
+            return
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            messagebox.showerror(
+                "Karaoke load failed",
+                f"Could not read karaoke file:\n{karaoke_path}\n\n{exc}",
+            )
+            return
+        if not entries:
+            messagebox.showerror(
+                "Karaoke export failed",
+                "The karaoke file contains no timed lyric lines to render into MP4.",
+            )
+            return
+
+        video_settings = self._ask_save_mp4_video_settings()
+        if video_settings is None:
+            return
+        output_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save as mp4",
+            initialdir=str(self._default_music_dir()),
+            initialfile=f"{base_name_for_pair(pair)}.mp4",
+            defaultextension=".mp4",
+            filetypes=[("MP4 files", "*.mp4")],
+            confirmoverwrite=True,
+        )
+        if not output_path:
+            return
+
+        target = Path(output_path).expanduser()
+        try:
+            validate_video_export_destination(pair, target)
+        except ValueError as exc:
+            messagebox.showerror("Invalid destination", str(exc))
+            return
+
+        finish_message = None
+        if self._karaoke_finish_celebration_enabled:
+            finish_message = f"Вы поёте великолепно! Баллы: {random.randint(75, 99)}"
+        self._start_save_mp4(
+            pair,
+            entries,
+            target,
+            self._current_karaoke_render_settings(),
+            video_settings,
+            finish_message,
+        )
+
     def _open_transpose_dialog(self) -> None:
         if self._recording_active:
             return
@@ -1971,6 +2313,12 @@ class App(tk.Tk):
             messagebox.showinfo(
                 "MP3 export in progress",
                 "Wait until the current MP3 export finishes before starting transposition.",
+            )
+            return
+        if self._save_mp4_running:
+            messagebox.showinfo(
+                "MP4 export in progress",
+                "Wait until the current MP4 export finishes before starting transposition.",
             )
             return
         if self._transpose_running:
@@ -2226,6 +2574,89 @@ class App(tk.Tk):
         messagebox.showerror(
             "Save failed",
             f"Could not save MP3 for:\n{pair.key}\n\nDestination:\n{output_path}\n\n{self._ffmpeg_error_details(exc)}",
+        )
+
+    def _start_save_mp4(
+        self,
+        pair: SongPair,
+        entries: List[KaraokeEntry],
+        output_path: Path,
+        render_settings: KaraokeRenderSettings,
+        video_settings: VideoExportSettings,
+        finish_message: Optional[str],
+    ) -> None:
+        if self._save_mp4_running:
+            return
+
+        win = tk.Toplevel(self)
+        self._save_mp4_progress_window = win
+        win.title("Saving MP4")
+        win.resizable(False, False)
+        win.transient(self)
+        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        ttk.Label(
+            win,
+            text=(
+                "Rendering the selected track into a karaoke MP4 video "
+                f"({video_settings.label}, {video_settings.width}x{video_settings.height}, instrumental audio only)."
+            ),
+            style="Subtle.TLabel",
+            wraplength=430,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(14, 8))
+
+        self._save_mp4_progress_label = ttk.Label(win, text="Preparing...", style="Subtle.TLabel")
+        self._save_mp4_progress_label.pack(anchor="w", padx=12)
+
+        progress = ttk.Progressbar(win, mode="indeterminate", length=430)
+        progress.pack(fill="x", padx=12, pady=(12, 14))
+        progress.start(12)
+        self._save_mp4_progress_bar = progress
+        self._fit_dialog_to_content(win, min_width=470, min_height=155)
+
+        self._save_mp4_running = True
+        title = pair.key
+        colors = dict(self.colors)
+
+        def worker() -> None:
+            try:
+                self.after(0, lambda: self._set_save_mp4_progress("Preparing MP4 export..."))
+                render_karaoke_to_mp4(
+                    pair,
+                    output_path,
+                    entries,
+                    title=title,
+                    colors=colors,
+                    render_settings=render_settings,
+                    video_settings=video_settings,
+                    finish_message=finish_message,
+                    progress_callback=lambda text: self.after(0, lambda text=text: self._set_save_mp4_progress(text)),
+                    sr=self.player.sr,
+                )
+            except Exception as exc:
+                self.after(0, lambda exc=exc: self._finish_save_mp4_failure(pair, output_path, exc))
+                return
+
+            self.after(0, lambda: self._finish_save_mp4_success(output_path))
+
+        self._save_mp4_thread = threading.Thread(target=worker, daemon=True)
+        self._save_mp4_thread.start()
+
+    def _finish_save_mp4_success(self, output_path: Path) -> None:
+        self._save_mp4_running = False
+        self._save_mp4_thread = None
+        self._close_save_mp4_progress_window()
+        messagebox.showinfo("Save complete", f"Saved MP4 to:\n{output_path}")
+
+    def _finish_save_mp4_failure(self, pair: SongPair, output_path: Path, exc: Exception) -> None:
+        self._save_mp4_running = False
+        self._save_mp4_thread = None
+        self._close_save_mp4_progress_window()
+        messagebox.showerror(
+            "Save failed",
+            f"Could not save MP4 for:\n{pair.key}\n\nDestination:\n{output_path}\n\n{self._ffmpeg_error_details(exc)}",
         )
 
     def _on_select(self, event) -> None:
@@ -2801,7 +3232,7 @@ class App(tk.Tk):
             return False
 
         self._karaoke_entries = entries
-        self._karaoke_end_ts = [item["end_ts"] for item in entries]
+        self._karaoke_end_ts = karaoke_end_timestamps(entries)
         self._karaoke_pair = pair
         self._karaoke_idx_hint = None
         self._karaoke_idx_hint_t = 0.0
@@ -2863,71 +3294,26 @@ class App(tk.Tk):
     def _karaoke_display_state(
         self,
     ) -> tuple[List[str], int, List[str] | None, int, int | None, float]:
-        count = max(1, self._karaoke_visible_lines)
         if not self._karaoke_entries:
-            self._karaoke_idx_hint = None
-            self._karaoke_idx_hint_t = 0.0
+            count = max(1, self._karaoke_visible_lines)
             return [""] * count, 0, None, 0, None, 0.0
         if self._karaoke_pair is not None and self._current_pair is not None:
             if self._karaoke_pair != self._current_pair:
-                self._karaoke_idx_hint = None
-                self._karaoke_idx_hint_t = 0.0
+                count = max(1, self._karaoke_visible_lines)
                 return [""] * count, 0, None, 0, None, 0.0
-        t = self.player.position_seconds()
-        idx = bisect_right(self._karaoke_end_ts, t)
-        if self._karaoke_idx_hint is not None and idx < self._karaoke_idx_hint:
-            if t >= self._karaoke_idx_hint_t - 0.1 and not self.karaoke.is_seeking():
-                idx = self._karaoke_idx_hint
-        self._karaoke_idx_hint = idx
-        self._karaoke_idx_hint_t = t
-        if idx >= len(self._karaoke_entries):
-            return [""] * count, idx % count, None, 0, None, 0.0
-
-        active_slot = idx % count
-        slot_lines = [""] * count
-        total = len(self._karaoke_entries)
-        for slot_idx in range(count):
-            line_idx = idx + ((slot_idx - active_slot) % count)
-            if line_idx < total:
-                slot_lines[slot_idx] = self._karaoke_entries[line_idx]["line"]
-
-        entry = self._karaoke_entries[idx]
-        words = entry["words"]
-        if not words:
-            return slot_lines, active_slot, None, 0, None, 0.0
-
-        word_end_ts = [word["end_ts"] for word in words]
-        sung_words = bisect_right(word_end_ts, t)
-        active_word_idx: int | None = None
-        for word_idx, word in enumerate(words):
-            if word["start_ts"] <= t < word["end_ts"]:
-                active_word_idx = word_idx
-                break
-
-        if (
-            active_word_idx is None
-            and sung_words < len(words)
-            and t >= words[sung_words]["start_ts"]
-        ):
-            active_word_idx = sung_words
-
-        active_word_progress = 0.0
-        if active_word_idx is not None:
-            word = words[active_word_idx]
-            word_start = word["start_ts"]
-            word_end = word["end_ts"]
-            if word_end <= word_start:
-                active_word_progress = 1.0 if t >= word_end else 0.0
-            else:
-                active_word_progress = min(max((t - word_start) / (word_end - word_start), 0.0), 1.0)
-
+        state = karaoke_frame_state(
+            self._karaoke_entries,
+            visible_lines=self._karaoke_visible_lines,
+            t=self.player.position_seconds(),
+            end_timestamps=self._karaoke_end_ts,
+        )
         return (
-            slot_lines,
-            active_slot,
-            [word["word"] for word in words],
-            sung_words,
-            active_word_idx,
-            active_word_progress,
+            list(state.slot_lines),
+            state.active_slot,
+            list(state.words) if state.words is not None else None,
+            state.sung_words,
+            state.active_word_idx,
+            state.active_word_progress,
         )
 
     def _update_karaoke_ui(self) -> None:
@@ -2954,18 +3340,11 @@ class App(tk.Tk):
             slot_lines, active_slot = self._recording_display_lines()
             self.karaoke.update_lines(slot_lines, active_slot)
         elif self._karaoke_countdown_value is not None:
-            countdown = f"{self._karaoke_countdown_value}.."
-            count = max(1, self._karaoke_visible_lines)
-            active_slot = min(count - 1, count // 2)
-            slot_lines = [""] * count
-            slot_lines[active_slot] = countdown
-            self.karaoke.update_lines(slot_lines, active_slot)
+            state = countdown_frame_state(self._karaoke_visible_lines, self._karaoke_countdown_value)
+            self.karaoke.update_lines(list(state.slot_lines), state.active_slot)
         elif self._karaoke_finish_message is not None and not playing:
-            count = max(1, self._karaoke_visible_lines)
-            active_slot = min(count - 1, count // 2)
-            slot_lines = [""] * count
-            slot_lines[active_slot] = self._karaoke_finish_message
-            self.karaoke.update_lines(slot_lines, active_slot)
+            state = finish_frame_state(self._karaoke_visible_lines, self._karaoke_finish_message)
+            self.karaoke.update_lines(list(state.slot_lines), state.active_slot)
         else:
             slot_lines, active_slot, words, sung_words, active_word_idx, active_word_progress = (
                 self._karaoke_display_state()
@@ -3000,6 +3379,13 @@ class App(tk.Tk):
             )
             return
         self._close_save_mp3_progress_window()
+        if self._save_mp4_running:
+            messagebox.showinfo(
+                "MP4 export in progress",
+                "Wait until the current MP4 export finishes before closing the app.",
+            )
+            return
+        self._close_save_mp4_progress_window()
         self._close_process_settings_window()
         if not self._confirm_or_kill_running_process():
             return

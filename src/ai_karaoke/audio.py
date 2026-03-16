@@ -150,6 +150,31 @@ def mix_stems_to_mp3(
         )
 
 
+def probe_audio_duration(path: Path, *, sr: int = DEFAULT_SR) -> float:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]
+    try:
+        out = subprocess.check_output(
+            cmd,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ).strip()
+    except FileNotFoundError:
+        pcm = decode_mp3_to_float32(path, sr=sr)
+        return float(pcm.shape[0] / sr)
+    value = float(out)
+    return max(0.0, value)
+
+
 def _run_ffmpeg_command(cmd: List[str]) -> None:
     subprocess.run(
         cmd,

@@ -114,6 +114,17 @@ class KaraokeScreen:
             size=self._lyrics_font_size,
             weight="bold",
         )
+        self._title_font = tkfont.Font(
+            root=parent,
+            family="Fira Sans",
+            size=18,
+            weight="bold",
+        )
+        self._footer_font = tkfont.Font(
+            root=parent,
+            family="Fira Sans",
+            size=11,
+        )
         self._lyrics_line_height = 1
         self._lyrics_line_gap = 6
         self._lyrics_display_gap = 2
@@ -157,6 +168,15 @@ class KaraokeScreen:
             except tk.TclError:
                 pass
         return clamped
+
+    def lyrics_font_family(self) -> str:
+        return str(self._lyrics_font.actual("family") or "Playfair Display")
+
+    def title_font_family(self) -> str:
+        return str(self._title_font.actual("family") or "Fira Sans")
+
+    def footer_font_family(self) -> str:
+        return str(self._footer_font.actual("family") or self.title_font_family())
 
     def set_visible_line_count(self, count: int) -> int:
         clamped = self._clamp_visible_lines(count)
