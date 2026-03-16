@@ -6,6 +6,10 @@ from typing import Callable, Dict, Optional, Sequence
 import tkinter as tk
 from tkinter import font as tkfont, ttk
 
+from .ui.karaoke.tooltips import HoverTooltip
+from .ui.widgets.formatting import format_time
+from .ui.widgets.scale_helpers import scale_step, scale_value_from_x, wheel_direction
+
 
 @dataclass(frozen=True)
 class KaraokeCallbacks:
@@ -37,112 +41,6 @@ class _CanvasWordItem:
     full_id: int
     part_id: int
     token: str
-
-
-class _HoverTooltip:
-    def __init__(
-        self,
-        widget: tk.Widget,
-        text: str | Callable[[], str],
-        colors: Dict[str, str],
-        *,
-        delay_ms: int = 350,
-    ) -> None:
-        self.widget = widget
-        self.text = text
-        self.colors = colors
-        self.delay_ms = delay_ms
-        self._show_job: Optional[str] = None
-        self._window: Optional[tk.Toplevel] = None
-
-        self.widget.bind("<Enter>", self._schedule_show, add="+")
-        self.widget.bind("<Leave>", self._hide, add="+")
-        self.widget.bind("<ButtonPress>", self._hide, add="+")
-        self.widget.bind("<Destroy>", self._handle_destroy, add="+")
-
-    def destroy(self) -> None:
-        self._hide()
-
-    def _schedule_show(self, _event=None) -> None:
-        self._cancel_show()
-        if not self._tooltip_text():
-            return
-        try:
-            self._show_job = self.widget.after(self.delay_ms, self._show)
-        except tk.TclError:
-            self._show_job = None
-
-    def _cancel_show(self) -> None:
-        if self._show_job is None:
-            return
-        try:
-            self.widget.after_cancel(self._show_job)
-        except tk.TclError:
-            pass
-        self._show_job = None
-
-    def _show(self) -> None:
-        self._show_job = None
-        try:
-            if not self.widget.winfo_exists() or not self.widget.winfo_viewable():
-                return
-        except tk.TclError:
-            return
-        tooltip_text = self._tooltip_text()
-        if not tooltip_text:
-            return
-        if self._window is not None and self._window.winfo_exists():
-            return
-
-        win = tk.Toplevel(self.widget)
-        self._window = win
-        win.withdraw()
-        win.wm_overrideredirect(True)
-        try:
-            win.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        win.configure(bg=self.colors["panel_border"])
-
-        label = tk.Label(
-            win,
-            text=tooltip_text,
-            justify="left",
-            wraplength=260,
-            bg=self.colors["panel"],
-            fg=self.colors["text"],
-            font=("Fira Sans", 10),
-            relief="solid",
-            borderwidth=1,
-            padx=10,
-            pady=6,
-        )
-        label.pack()
-
-        win.update_idletasks()
-        x = self.widget.winfo_rootx() + max(0, (self.widget.winfo_width() - win.winfo_reqwidth()) // 2)
-        y = self.widget.winfo_rooty() - win.winfo_reqheight() - 8
-        if y < 0:
-            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
-        win.geometry(f"+{x}+{y}")
-        win.deiconify()
-
-    def _hide(self, _event=None) -> None:
-        self._cancel_show()
-        if self._window is None:
-            return
-        try:
-            self._window.destroy()
-        except tk.TclError:
-            pass
-        self._window = None
-
-    def _handle_destroy(self, _event=None) -> None:
-        self._hide()
-
-    def _tooltip_text(self) -> str:
-        value = self.text() if callable(self.text) else self.text
-        return str(value).strip()
 
 
 class KaraokeScreen:
@@ -234,7 +132,7 @@ class KaraokeScreen:
         self._slot_word_items: list[list[_CanvasWordItem]] = []
         self._display_slot_lines: tuple[str, ...] = tuple("" for _ in range(self._visible_line_count))
         self._display_active_slot = 0
-        self._tooltips: list[_HoverTooltip] = []
+        self._tooltips: list[HoverTooltip] = []
 
     def _clamp_visible_lines(self, count: int) -> int:
         return max(self._MIN_VISIBLE_LINES, min(self._MAX_VISIBLE_LINES, int(count)))
@@ -453,7 +351,7 @@ class KaraokeScreen:
             return
         if float(self.k_seek.cget("to")) != dur:
             self.k_seek.configure(to=dur)
-        self.k_time_lbl.configure(text=f"{self._format_time(pos)} / {self._format_time(dur)}")
+        self.k_time_lbl.configure(text=f"{format_time(pos)} / {format_time(dur)}")
         if not seeking:
             self._ignore_seek_events = True
             self.k_seek.set(pos)
@@ -677,7 +575,7 @@ class KaraokeScreen:
         self._record_row = 3
 
     def _attach_tooltip(self, widget: tk.Widget, text: str | Callable[[], str]) -> None:
-        self._tooltips.append(_HoverTooltip(widget, text, self.colors))
+        self._tooltips.append(HoverTooltip(widget, text, self.colors))
 
     def _line_count_tooltip(self, increasing: bool) -> str:
         current = self._visible_line_count
@@ -1273,32 +1171,6 @@ class KaraokeScreen:
     def _current_line_text_width(self) -> int:
         return max(240, self._current_line_width() - self._line_pad_x * 2)
 
-    def _format_time(self, sec: float) -> str:
-        sec = max(0.0, sec)
-        m = int(sec // 60)
-        s = int(sec % 60)
-        return f"{m:02d}:{s:02d}"
-
-    def _scale_value_from_x(self, scale: ttk.Scale, x: int) -> float:
-        width = max(1, scale.winfo_width())
-        start = float(scale.cget("from"))
-        end = float(scale.cget("to"))
-        ratio = min(max(x / width, 0.0), 1.0)
-        return start + (end - start) * ratio
-
-    def _scale_step(self, scale: ttk.Scale, direction: int, step: float = 0.05) -> None:
-        start = float(scale.cget("from"))
-        end = float(scale.cget("to"))
-        cur = float(scale.get())
-        nxt = min(max(cur + direction * step, start), end)
-        scale.set(nxt)
-
-    def _wheel_direction(self, event) -> int:
-        if getattr(event, "num", None) in (4, 5):
-            return 1 if event.num == 4 else -1
-        delta = getattr(event, "delta", 0)
-        return 1 if delta > 0 else -1
-
     def _on_seek_drag(self, value: str) -> None:
         if self._ignore_seek_events:
             return
@@ -1319,13 +1191,13 @@ class KaraokeScreen:
     def _on_seek_click(self, event) -> str:
         if str(self.k_seek.cget("state")) == "disabled":
             return "break"
-        self.k_seek.set(self._scale_value_from_x(self.k_seek, event.x))
+        self.k_seek.set(scale_value_from_x(self.k_seek, event.x))
         return "break"
 
     def _on_seek_motion(self, event) -> str:
         if str(self.k_seek.cget("state")) == "disabled":
             return "break"
-        self.k_seek.set(self._scale_value_from_x(self.k_seek, event.x))
+        self.k_seek.set(scale_value_from_x(self.k_seek, event.x))
         return "break"
 
     def _on_v_gain(self, value: str) -> None:
@@ -1341,35 +1213,35 @@ class KaraokeScreen:
     def _on_v_click(self, event) -> str:
         if str(self.k_v_slider.cget("state")) == "disabled":
             return "break"
-        self.k_v_slider.set(self._scale_value_from_x(self.k_v_slider, event.x))
+        self.k_v_slider.set(scale_value_from_x(self.k_v_slider, event.x))
         return "break"
 
     def _on_v_motion(self, event) -> str:
         if str(self.k_v_slider.cget("state")) == "disabled":
             return "break"
-        self.k_v_slider.set(self._scale_value_from_x(self.k_v_slider, event.x))
+        self.k_v_slider.set(scale_value_from_x(self.k_v_slider, event.x))
         return "break"
 
     def _on_i_click(self, event) -> str:
         if str(self.k_i_slider.cget("state")) == "disabled":
             return "break"
-        self.k_i_slider.set(self._scale_value_from_x(self.k_i_slider, event.x))
+        self.k_i_slider.set(scale_value_from_x(self.k_i_slider, event.x))
         return "break"
 
     def _on_i_motion(self, event) -> str:
         if str(self.k_i_slider.cget("state")) == "disabled":
             return "break"
-        self.k_i_slider.set(self._scale_value_from_x(self.k_i_slider, event.x))
+        self.k_i_slider.set(scale_value_from_x(self.k_i_slider, event.x))
         return "break"
 
     def _on_v_wheel(self, event) -> str:
         if str(self.k_v_slider.cget("state")) == "disabled":
             return "break"
-        self._scale_step(self.k_v_slider, self._wheel_direction(event))
+        scale_step(self.k_v_slider, wheel_direction(event))
         return "break"
 
     def _on_i_wheel(self, event) -> str:
         if str(self.k_i_slider.cget("state")) == "disabled":
             return "break"
-        self._scale_step(self.k_i_slider, self._wheel_direction(event))
+        scale_step(self.k_i_slider, wheel_direction(event))
         return "break"

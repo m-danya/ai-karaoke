@@ -2,82 +2,45 @@ from __future__ import annotations
 
 import json
 import os
-import queue
-import shutil
 from bisect import bisect_right
-from dataclasses import dataclass
 import random
 import re
-import signal
 import subprocess
 import sys
 import threading
-import tempfile
-import urllib.parse
-import webbrowser
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, TypedDict
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import sounddevice as sd
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .audio import compute_vocals_env, decode_mp3_to_float32, mix_stems_to_mp3, transpose_mp3
-from .config import resolve_library_path, save_config
-from .constants import GENIUS_TAG, INSTR_TAG, KARAOKE_TAG, VOCALS_TAG
+from .audio import compute_vocals_env, decode_mp3_to_float32
+from .controllers.process_runner import MusicProcessRunner
 from .karaoke_screen import KaraokeCallbacks, KaraokeScreen
-from .library import (
+from .library_paths import (
     base_name_for_pair,
     genius_lyrics_path_for_pair,
     karaoke_path_for_pair,
-    load_playlists,
     normalize_track_id,
-    save_playlists,
-    scan_folder,
     track_id_for_pair,
 )
-from .models import SongPair
+from .models import ExportMixSettings, KaraokeEntry, SongPair, TrackListItem, TransposedTrackPaths
+from .library_scan import scan_folder
+from .playlist_store import load_playlists, save_playlists
 from .player import PlaybackController
-
-
-class KaraokeWord(TypedDict):
-    word: str
-    start_ts: float
-    end_ts: float
-
-
-class KaraokeEntry(TypedDict):
-    line: str
-    start_ts: float
-    end_ts: float
-    words: List[KaraokeWord]
-
-
-@dataclass(frozen=True)
-class TrackListItem:
-    track_id: str
-    label: str
-    pair: Optional[SongPair]
-    missing: bool
-
-
-@dataclass(frozen=True)
-class TransposedTrackPaths:
-    base_name: str
-    vocals: Path
-    instrumental: Path
-    genius_lyrics: Path
-    karaoke: Path
-
-
-@dataclass(frozen=True)
-class ExportMixSettings:
-    label: str
-    vocals_gain: float
-    instr_gain: float
-    vocals_muted: bool
-    instr_muted: bool
+from .services.export_service import (
+    ffmpeg_error_details,
+    render_mix_to_mp3,
+    validate_export_destination,
+)
+from .services.karaoke_file_service import clean_lyrics_lines, load_karaoke_entries_for_pair
+from .services.system_integration import open_genius_search, show_in_file_manager
+from .services.transpose_service import transpose_track_copy
+from .settings import AppSettings, resolve_library_path
+from .ui.widgets.formatting import format_time
+from .ui.widgets.scale_helpers import scale_step, scale_value_from_x, wheel_direction
 
 
 _KEY_INPUT_RE = re.compile(r"^\s*([A-Ga-g])([#b]?)(m?)\s*$")
@@ -125,23 +88,6 @@ def _transpose_preview_key(raw: str, semitones: int) -> str:
     return f"{note}{'m' if is_minor else ''}"
 
 
-def _transpose_suffix(semitones: int, attempt: int = 0) -> str:
-    if attempt <= 0:
-        return f"({semitones:+d} transposed)"
-    return f"({semitones:+d} transposed {attempt + 1})"
-
-
-def _build_transposed_track_paths(pair: SongPair, semitones: int, attempt: int = 0) -> TransposedTrackPaths:
-    base_name = f"{base_name_for_pair(pair)} {_transpose_suffix(semitones, attempt)}"
-    return TransposedTrackPaths(
-        base_name=base_name,
-        vocals=pair.vocals.with_name(f"{base_name}{VOCALS_TAG}.mp3"),
-        instrumental=pair.instrumental.with_name(f"{base_name}{INSTR_TAG}.mp3"),
-        genius_lyrics=pair.vocals.with_name(f"{base_name}{GENIUS_TAG}.txt"),
-        karaoke=pair.vocals.with_name(f"{base_name}{KARAOKE_TAG}.json"),
-    )
-
-
 class App(tk.Tk):
     _FILTER_ALL = "All"
     _FILTER_HISTORY = "History"
@@ -156,7 +102,7 @@ class App(tk.Tk):
         self,
         folder: Path,
         invalid_path: Optional[str] = None,
-        config: Optional[Dict[str, str]] = None,
+        settings: Optional[AppSettings] = None,
     ) -> None:
         super().__init__(className="AIKaraoke")
         self.title("AI Karaoke")
@@ -164,15 +110,15 @@ class App(tk.Tk):
         self.minsize(1120, 827)
 
         self.folder = folder
-        self._config: Dict[str, str] = dict(config) if config is not None else {}
-        self._config["library_path"] = str(folder)
-        self._karaoke_font_size = self._load_karaoke_font_size()
-        self._karaoke_visible_lines = self._load_karaoke_visible_lines()
-        self._karaoke_countdown_enabled = self._load_karaoke_countdown_enabled()
-        self._karaoke_finish_celebration_enabled = self._load_karaoke_finish_celebration_enabled()
-        self._process_jobs = self._load_process_jobs()
-        self._process_genius_delay_seconds = self._load_process_genius_delay_seconds()
-        self._process_only_align = self._load_process_only_align()
+        self.settings = settings if settings is not None else AppSettings.load()
+        self.settings.library_path = str(folder)
+        self._karaoke_font_size = self.settings.karaoke_font_size
+        self._karaoke_visible_lines = self.settings.karaoke_visible_lines
+        self._karaoke_countdown_enabled = self.settings.karaoke_countdown_enabled
+        self._karaoke_finish_celebration_enabled = self.settings.karaoke_finish_celebration_enabled
+        self._process_jobs = self.settings.process_jobs
+        self._process_genius_delay_seconds = self.settings.process_genius_delay_seconds
+        self._process_only_align = self.settings.process_only_align
         self.library_var = tk.StringVar(value=str(folder))
         self._all_pairs: List[SongPair] = []
         self._pairs_by_track_id: Dict[str, SongPair] = {}
@@ -205,9 +151,7 @@ class App(tk.Tk):
         self._recording_done_message: Optional[str] = None
         self._recording_done_job: Optional[str] = None
         self._process_running = False
-        self._process_subprocess: Optional[subprocess.Popen[str]] = None
-        self._process_reader_thread: Optional[threading.Thread] = None
-        self._process_output_queue: Optional[queue.Queue[tuple[str, object]]] = None
+        self._process_runner = MusicProcessRunner()
         self._process_poll_job: Optional[str] = None
         self._process_log_window: Optional[tk.Toplevel] = None
         self._process_log_label: Optional[ttk.Label] = None
@@ -472,96 +416,39 @@ class App(tk.Tk):
             ),
         )
 
-    def _parse_bool_config(self, key: str, default: bool) -> bool:
-        raw = self._config.get(key)
-        if raw is None:
-            return default
-        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-    def _load_karaoke_font_size(self) -> int:
-        raw = self._config.get("karaoke_font_size")
-        if raw is None:
-            return 36
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return 36
-        return max(20, min(72, value))
-
-    def _load_karaoke_visible_lines(self) -> int:
-        raw = self._config.get("karaoke_visible_lines")
-        if raw is None:
-            return 3
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return 3
-        return max(1, min(7, value))
-
-    def _load_karaoke_countdown_enabled(self) -> bool:
-        return self._parse_bool_config("karaoke_countdown_enabled", True)
-
-    def _load_karaoke_finish_celebration_enabled(self) -> bool:
-        return self._parse_bool_config("karaoke_finish_celebration_enabled", True)
-
-    def _load_process_jobs(self) -> int:
-        raw = self._config.get("process_jobs")
-        if raw is None:
-            return 1
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return 1
-        return max(1, min(64, value))
-
-    def _load_process_genius_delay_seconds(self) -> float:
-        raw = self._config.get("process_genius_delay_seconds")
-        if raw is None:
-            return 30.0
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            return 30.0
-        return max(0.0, value)
-
-    def _load_process_only_align(self) -> bool:
-        return self._parse_bool_config("process_only_align", False)
-
     def _save_config(self) -> None:
-        save_config(self._config)
+        self.settings.save()
 
     def _save_library_path(self, folder: Path) -> None:
-        self._config["library_path"] = str(folder)
+        self.settings.library_path = str(folder)
         self._save_config()
 
     def _save_karaoke_font_size(self) -> None:
-        self._config["karaoke_font_size"] = str(self._karaoke_font_size)
+        self.settings.karaoke_font_size = self._karaoke_font_size
         self._save_config()
 
     def _save_karaoke_visible_lines(self) -> None:
-        self._config["karaoke_visible_lines"] = str(self._karaoke_visible_lines)
+        self.settings.karaoke_visible_lines = self._karaoke_visible_lines
         self._save_config()
 
     def _save_karaoke_countdown_enabled(self) -> None:
-        self._config["karaoke_countdown_enabled"] = "1" if self._karaoke_countdown_enabled else "0"
+        self.settings.karaoke_countdown_enabled = self._karaoke_countdown_enabled
         self._save_config()
 
     def _save_karaoke_finish_celebration_enabled(self) -> None:
-        self._config["karaoke_finish_celebration_enabled"] = (
-            "1" if self._karaoke_finish_celebration_enabled else "0"
-        )
+        self.settings.karaoke_finish_celebration_enabled = self._karaoke_finish_celebration_enabled
         self._save_config()
 
     def _save_process_jobs(self) -> None:
-        self._config["process_jobs"] = str(self._process_jobs)
+        self.settings.process_jobs = self._process_jobs
         self._save_config()
 
     def _save_process_genius_delay_seconds(self) -> None:
-        self._config["process_genius_delay_seconds"] = str(self._process_genius_delay_seconds)
+        self.settings.process_genius_delay_seconds = self._process_genius_delay_seconds
         self._save_config()
 
     def _save_process_only_align(self) -> None:
-        self._config["process_only_align"] = "1" if self._process_only_align else "0"
+        self.settings.process_only_align = self._process_only_align
         self._save_config()
 
     def _build_ui(self) -> None:
@@ -1427,54 +1314,14 @@ class App(tk.Tk):
 
         self._append_process_log(f"Command: {' '.join(command)}\n\n")
 
-        popen_kwargs: dict[str, object] = {
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.STDOUT,
-            "text": True,
-            "encoding": "utf-8",
-            "errors": "replace",
-            "bufsize": 1,
-            "cwd": str(self._project_root()),
-        }
-        if os.name == "nt":
-            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            if creationflags:
-                popen_kwargs["creationflags"] = creationflags
-        else:
-            # Run in a separate session so force-kill can terminate all worker children.
-            popen_kwargs["start_new_session"] = True
-
         try:
-            process = subprocess.Popen(command, **popen_kwargs)
-        except (OSError, ValueError) as exc:
+            self._process_runner.start(command, cwd=self._project_root())
+        except (OSError, ValueError, RuntimeError) as exc:
             self._append_process_log(f"Failed to start process: {exc}\n")
             return
 
-        if process.stdout is None:
-            self._append_process_log("Failed to capture process output.\n")
-            self._terminate_music_processing_process(process, force_kill=False)
-            return
-
         self._process_running = True
-        self._process_subprocess = process
-        self._process_output_queue = queue.Queue()
         self.btn_process.configure(state="disabled")
-
-        def _reader() -> None:
-            assert process.stdout is not None
-            with process.stdout:
-                for line in process.stdout:
-                    output_queue = self._process_output_queue
-                    if output_queue is None:
-                        return
-                    output_queue.put(("line", line))
-            return_code = process.wait()
-            output_queue = self._process_output_queue
-            if output_queue is not None:
-                output_queue.put(("done", return_code))
-
-        self._process_reader_thread = threading.Thread(target=_reader, daemon=True)
-        self._process_reader_thread.start()
 
         if self._process_poll_job is not None:
             try:
@@ -1587,26 +1434,9 @@ class App(tk.Tk):
 
     def _poll_process_output(self) -> None:
         self._process_poll_job = None
-        output_queue = self._process_output_queue
-        if output_queue is None:
-            return
-
-        return_code: Optional[int] = None
-        while True:
-            try:
-                event, payload = output_queue.get_nowait()
-            except queue.Empty:
-                break
-
-            if event == "line":
-                self._append_process_log(str(payload))
-                continue
-            if event == "done":
-                try:
-                    return_code = int(payload)
-                except (TypeError, ValueError):
-                    return_code = 1
-                break
+        lines, return_code = self._process_runner.poll()
+        for line in lines:
+            self._append_process_log(line)
 
         if return_code is not None:
             self._finish_process_run(return_code)
@@ -1616,9 +1446,7 @@ class App(tk.Tk):
 
     def _finish_process_run(self, return_code: int) -> None:
         self._process_running = False
-        self._process_subprocess = None
-        self._process_output_queue = None
-        self._process_reader_thread = None
+        self._process_runner.stop()
         if not self._recording_active:
             self.btn_process.configure(state="normal")
 
@@ -1640,71 +1468,10 @@ class App(tk.Tk):
                 pass
             self._process_poll_job = None
 
-        process = self._process_subprocess
-        if process is not None and process.poll() is None:
-            self._terminate_music_processing_process(process, force_kill=force_kill)
-
+        self._process_runner.stop(force_kill=force_kill)
         self._process_running = False
-        self._process_subprocess = None
-        self._process_output_queue = None
-        self._process_reader_thread = None
         if not self._recording_active:
             self.btn_process.configure(state="normal")
-
-    def _terminate_music_processing_process(
-        self, process: subprocess.Popen[str], *, force_kill: bool
-    ) -> None:
-        if process.poll() is not None:
-            return
-
-        if os.name != "nt":
-            try:
-                child_pgid = os.getpgid(process.pid)
-            except (OSError, ProcessLookupError):
-                child_pgid = None
-
-            # Kill the child's own process group; never target current UI group.
-            if child_pgid is not None and child_pgid != os.getpgrp():
-                sig = signal.SIGKILL if force_kill else signal.SIGTERM
-                try:
-                    os.killpg(child_pgid, sig)
-                except (OSError, ProcessLookupError):
-                    return
-
-                try:
-                    process.wait(timeout=2)
-                    return
-                except subprocess.TimeoutExpired:
-                    if force_kill:
-                        return
-
-                try:
-                    os.killpg(child_pgid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    pass
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-                return
-
-        if force_kill:
-            process.kill()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                pass
-            return
-
-        process.terminate()
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                pass
 
     def _project_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
@@ -1826,12 +1593,6 @@ class App(tk.Tk):
         self._rescan_track_pairs()
         self._apply_filter(preserve_index=old_idx)
 
-    def _format_time(self, sec: float) -> str:
-        sec = max(0.0, sec)
-        m = int(sec // 60)
-        s = int(sec % 60)
-        return f"{m:02d}:{s:02d}"
-
     def _load_pair(self, idx: int) -> None:
         if not self.items:
             return
@@ -1937,70 +1698,10 @@ class App(tk.Tk):
         pair = self._current_pair
         if pair is None:
             return
-        cleaned = re.sub(r"[^0-9A-Za-zА-Яа-я]+", " ", pair.key).strip()
-        if not cleaned:
-            return
-        query = urllib.parse.quote_plus(cleaned)
-        url = f"https://www.google.com/search?q=genius+{query}"
-        webbrowser.open(url, new=2)
-
-    def _run_external_command(self, cmd: List[str]) -> bool:
-        try:
-            subprocess.run(
-                cmd,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return True
-        except (FileNotFoundError, OSError, subprocess.CalledProcessError):
-            return False
+        open_genius_search(pair.key)
 
     def _show_in_file_manager(self, path: Path) -> None:
-        target = path.resolve()
-        if os.name == "nt":
-            if self._run_external_command(["explorer", "/select,", str(target)]):
-                return
-            raise OSError("Could not launch Explorer.")
-
-        if sys.platform.startswith("linux"):
-            uri = target.as_uri()
-            commands = [
-                [
-                    "dbus-send",
-                    "--session",
-                    "--dest=org.freedesktop.FileManager1",
-                    "--type=method_call",
-                    "/org/freedesktop/FileManager1",
-                    "org.freedesktop.FileManager1.ShowItems",
-                    f"array:string:{uri}",
-                    "string:",
-                ],
-                [
-                    "gdbus",
-                    "call",
-                    "--session",
-                    "--dest",
-                    "org.freedesktop.FileManager1",
-                    "--object-path",
-                    "/org/freedesktop/FileManager1",
-                    "--method",
-                    "org.freedesktop.FileManager1.ShowItems",
-                    f"[\"{uri}\"]",
-                    "",
-                ],
-                ["nautilus", "--select", str(target)],
-                ["dolphin", "--select", str(target)],
-                ["nemo", str(target)],
-                ["thunar", "--select", str(target)],
-                ["pcmanfm", str(target)],
-            ]
-            for cmd in commands:
-                if self._run_external_command(cmd):
-                    return
-            raise OSError("Could not launch a supported file manager.")
-
-        raise OSError(f"Unsupported platform: {sys.platform}")
+        show_in_file_manager(path)
 
     def _show_current_track_file(self) -> None:
         pair = self._current_pair
@@ -2159,13 +1860,7 @@ class App(tk.Tk):
             pass
 
     def _ffmpeg_error_details(self, exc: Exception) -> str:
-        if isinstance(exc, FileNotFoundError):
-            return "ffmpeg is required in PATH."
-        if isinstance(exc, subprocess.CalledProcessError):
-            details = (exc.stderr or "").strip()
-            if details:
-                return details
-        return str(exc)
+        return ffmpeg_error_details(exc)
 
     def _export_mix_settings(self, mode: str) -> ExportMixSettings:
         if mode == "current":
@@ -2184,12 +1879,6 @@ class App(tk.Tk):
             instr_muted=False,
         )
 
-    def _copy_related_file_if_present(self, source: Path, target: Path) -> bool:
-        if not source.is_file():
-            return False
-        shutil.copy2(source, target)
-        return True
-
     def _fit_dialog_to_content(
         self, win: tk.Toplevel, *, min_width: int, min_height: int
     ) -> None:
@@ -2204,15 +1893,6 @@ class App(tk.Tk):
         x = parent_x + max((parent_w - width) // 2, 0)
         y = parent_y + max((parent_h - height) // 2, 0)
         win.geometry(f"{width}x{height}+{x}+{y}")
-
-    def _transposed_output_paths(self, pair: SongPair, semitones: int) -> TransposedTrackPaths:
-        attempt = 0
-        while True:
-            paths = _build_transposed_track_paths(pair, semitones, attempt)
-            targets = (paths.vocals, paths.instrumental, paths.genius_lyrics, paths.karaoke)
-            if not any(path.exists() for path in targets):
-                return paths
-            attempt += 1
 
     def _save_current_track_as_mp3(self) -> None:
         if self._recording_active:
@@ -2266,24 +1946,15 @@ class App(tk.Tk):
 
         target = Path(output_path).expanduser()
         try:
-            resolved_target = target.resolve(strict=False)
-        except OSError:
-            resolved_target = target.absolute()
-        try:
-            source_paths = {
-                pair.vocals.resolve(strict=False),
-                pair.instrumental.resolve(strict=False),
-            }
-        except OSError:
-            source_paths = {pair.vocals.absolute(), pair.instrumental.absolute()}
-        if resolved_target in source_paths:
+            validate_export_destination(pair, target)
+        except ValueError as exc:
             messagebox.showerror(
                 "Invalid destination",
-                "Choose a new file name so the export does not overwrite one of the source stems.",
+                str(exc),
             )
             return
 
-        self._start_save_mp3(pair, resolved_target, mix_settings)
+        self._start_save_mp3(pair, target, mix_settings)
 
     def _open_transpose_dialog(self) -> None:
         if self._recording_active:
@@ -2452,32 +2123,12 @@ class App(tk.Tk):
         self._transpose_running = True
 
         def worker() -> None:
-            created_paths: List[Path] = []
             try:
-                paths = self._transposed_output_paths(pair, semitones)
                 self.after(0, lambda: self._set_transpose_progress("Transposing vocals..."))
-                transpose_mp3(pair.vocals, paths.vocals, semitones)
-                created_paths.append(paths.vocals)
-
                 self.after(0, lambda: self._set_transpose_progress("Transposing instrumental..."))
-                transpose_mp3(pair.instrumental, paths.instrumental, semitones)
-                created_paths.append(paths.instrumental)
-
                 self.after(0, lambda: self._set_transpose_progress("Copying lyrics..."))
-                if self._copy_related_file_if_present(
-                    genius_lyrics_path_for_pair(pair), paths.genius_lyrics
-                ):
-                    created_paths.append(paths.genius_lyrics)
-                if self._copy_related_file_if_present(karaoke_path_for_pair(pair), paths.karaoke):
-                    created_paths.append(paths.karaoke)
+                paths = transpose_track_copy(pair, semitones)
             except Exception as exc:
-                for path in reversed(created_paths):
-                    try:
-                        path.unlink()
-                    except FileNotFoundError:
-                        continue
-                    except OSError:
-                        pass
                 self.after(0, lambda exc=exc: self._finish_transpose_failure(pair, exc))
                 return
 
@@ -2550,35 +2201,10 @@ class App(tk.Tk):
         self._save_mp3_running = True
 
         def worker() -> None:
-            temp_output: Optional[Path] = None
             try:
                 self.after(0, lambda: self._set_save_mp3_progress(f"Rendering {mix_settings.label}..."))
-                with tempfile.NamedTemporaryFile(
-                    prefix=f"{output_path.stem}.",
-                    suffix=".mp3",
-                    dir=str(output_path.parent),
-                    delete=False,
-                ) as handle:
-                    temp_output = Path(handle.name)
-                mix_stems_to_mp3(
-                    pair.vocals,
-                    pair.instrumental,
-                    temp_output,
-                    vocals_gain=mix_settings.vocals_gain,
-                    instr_gain=mix_settings.instr_gain,
-                    vocals_muted=mix_settings.vocals_muted,
-                    instr_muted=mix_settings.instr_muted,
-                    sr=self.player.sr,
-                )
-                temp_output.replace(output_path)
+                render_mix_to_mp3(pair, output_path, mix_settings, sr=self.player.sr)
             except Exception as exc:
-                if temp_output is not None:
-                    try:
-                        temp_output.unlink()
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        pass
                 self.after(0, lambda exc=exc: self._finish_save_mp3_failure(pair, output_path, exc))
                 return
 
@@ -2817,72 +2443,52 @@ class App(tk.Tk):
             self._reset_karaoke_finish_state()
             self._update_karaoke_ui()
 
-    def _scale_value_from_x(self, scale: ttk.Scale, x: int) -> float:
-        width = max(1, scale.winfo_width())
-        start = float(scale.cget("from"))
-        end = float(scale.cget("to"))
-        ratio = min(max(x / width, 0.0), 1.0)
-        return start + (end - start) * ratio
-
-    def _scale_step(self, scale: ttk.Scale, direction: int, step: float = 0.05) -> None:
-        start = float(scale.cget("from"))
-        end = float(scale.cget("to"))
-        cur = float(scale.get())
-        nxt = min(max(cur + direction * step, start), end)
-        scale.set(nxt)
-
     def _on_seek_click(self, event) -> str:
         if str(self.seek.cget("state")) == "disabled":
             return "break"
-        self.seek.set(self._scale_value_from_x(self.seek, event.x))
+        self.seek.set(scale_value_from_x(self.seek, event.x))
         return "break"
 
     def _on_seek_motion(self, event) -> str:
         if str(self.seek.cget("state")) == "disabled":
             return "break"
-        self.seek.set(self._scale_value_from_x(self.seek, event.x))
+        self.seek.set(scale_value_from_x(self.seek, event.x))
         return "break"
 
     def _on_v_click(self, event) -> str:
         if str(self.v_slider.cget("state")) == "disabled":
             return "break"
-        self.v_slider.set(self._scale_value_from_x(self.v_slider, event.x))
+        self.v_slider.set(scale_value_from_x(self.v_slider, event.x))
         return "break"
 
     def _on_v_motion(self, event) -> str:
         if str(self.v_slider.cget("state")) == "disabled":
             return "break"
-        self.v_slider.set(self._scale_value_from_x(self.v_slider, event.x))
+        self.v_slider.set(scale_value_from_x(self.v_slider, event.x))
         return "break"
 
     def _on_i_click(self, event) -> str:
         if str(self.i_slider.cget("state")) == "disabled":
             return "break"
-        self.i_slider.set(self._scale_value_from_x(self.i_slider, event.x))
+        self.i_slider.set(scale_value_from_x(self.i_slider, event.x))
         return "break"
 
     def _on_i_motion(self, event) -> str:
         if str(self.i_slider.cget("state")) == "disabled":
             return "break"
-        self.i_slider.set(self._scale_value_from_x(self.i_slider, event.x))
+        self.i_slider.set(scale_value_from_x(self.i_slider, event.x))
         return "break"
-
-    def _wheel_direction(self, event) -> int:
-        if getattr(event, "num", None) in (4, 5):
-            return 1 if event.num == 4 else -1
-        delta = getattr(event, "delta", 0)
-        return 1 if delta > 0 else -1
 
     def _on_v_wheel(self, event) -> str:
         if str(self.v_slider.cget("state")) == "disabled":
             return "break"
-        self._scale_step(self.v_slider, self._wheel_direction(event))
+        scale_step(self.v_slider, wheel_direction(event))
         return "break"
 
     def _on_i_wheel(self, event) -> str:
         if str(self.i_slider.cget("state")) == "disabled":
             return "break"
-        self._scale_step(self.i_slider, self._wheel_direction(event))
+        scale_step(self.i_slider, wheel_direction(event))
         return "break"
 
     def _clear_seeking(self) -> None:
@@ -2971,7 +2577,7 @@ class App(tk.Tk):
         dur = self.player.duration_seconds()
         pos = self.player.position_seconds()
         pos = self._apply_karaoke_loop(pos, dur)
-        self.time_lbl.configure(text=f"{self._format_time(pos)} / {self._format_time(dur)}")
+        self.time_lbl.configure(text=f"{format_time(pos)} / {format_time(dur)}")
         if not self._seeking:
             self.seek.set(pos)
         self.btn_play.configure(
@@ -3171,60 +2777,6 @@ class App(tk.Tk):
         self._reset_karaoke_finish_state()
         self._reset_karaoke_loop()
 
-    def _parse_karaoke_words(
-        self,
-        raw_words: object,
-        *,
-        line_start: float,
-        line_end: float,
-    ) -> List[KaraokeWord]:
-        if not isinstance(raw_words, list):
-            return []
-
-        words: List[KaraokeWord] = []
-        prev_end = line_start
-        for item in raw_words:
-            if not isinstance(item, dict):
-                continue
-            raw_word = item.get("word")
-            if not isinstance(raw_word, str):
-                continue
-            word = raw_word.strip()
-            if not word:
-                continue
-
-            start_raw = item.get("start_ts", prev_end)
-            end_raw = item.get("end_ts", start_raw)
-            try:
-                start_ts = float(start_raw)
-            except (TypeError, ValueError):
-                start_ts = prev_end
-            try:
-                end_ts = float(end_raw)
-            except (TypeError, ValueError):
-                end_ts = start_ts
-
-            if start_ts < prev_end:
-                start_ts = prev_end
-            if end_ts < start_ts:
-                end_ts = start_ts
-
-            if start_ts > line_end:
-                start_ts = line_end
-            if end_ts > line_end:
-                end_ts = line_end
-
-            words.append(
-                {
-                    "word": word,
-                    "start_ts": start_ts,
-                    "end_ts": end_ts,
-                }
-            )
-            prev_end = end_ts
-
-        return words
-
     def _load_karaoke_playback(self, pair: SongPair, show_errors: bool = True) -> bool:
         path = karaoke_path_for_pair(pair)
         if not path.exists():
@@ -3233,8 +2785,13 @@ class App(tk.Tk):
             self._clear_karaoke_playback()
             return False
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            entries = load_karaoke_entries_for_pair(pair)
+        except FileNotFoundError:
+            if show_errors:
+                messagebox.showinfo("Karaoke not found", "No karaoke file found for this track.")
+            self._clear_karaoke_playback()
+            return False
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
             if show_errors:
                 messagebox.showerror(
                     "Karaoke load failed",
@@ -3242,80 +2799,6 @@ class App(tk.Tk):
                 )
             self._clear_karaoke_playback()
             return False
-        if not isinstance(raw, list):
-            if show_errors:
-                messagebox.showerror(
-                    "Karaoke load failed",
-                    f"Karaoke file should be a list:\n{path}",
-                )
-            self._clear_karaoke_playback()
-            return False
-
-        raw_entries: List[Dict[str, object]] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            line = item.get("line")
-            end_ts = item.get("end_ts")
-            if not isinstance(line, str):
-                continue
-            try:
-                end_val = float(end_ts)
-            except (TypeError, ValueError):
-                continue
-            raw_entries.append(
-                {
-                    "line": line,
-                    "end_ts": end_val,
-                    "start_ts": item.get("start_ts"),
-                    "words": item.get("words"),
-                }
-            )
-
-        if not raw_entries:
-            if show_errors:
-                messagebox.showerror(
-                    "Karaoke load failed",
-                    f"No valid entries found in:\n{path}",
-                )
-            self._clear_karaoke_playback()
-            return False
-
-        raw_entries.sort(key=lambda item: float(item["end_ts"]))
-        entries: List[KaraokeEntry] = []
-        prev_end = 0.0
-        for item in raw_entries:
-            end_val = float(item["end_ts"])
-            if end_val < prev_end:
-                end_val = prev_end
-
-            start_raw = item.get("start_ts")
-            if start_raw is None:
-                start_val = prev_end
-            else:
-                try:
-                    start_val = float(start_raw)
-                except (TypeError, ValueError):
-                    start_val = prev_end
-            if start_val < prev_end:
-                start_val = prev_end
-            if start_val > end_val:
-                start_val = end_val
-
-            words = self._parse_karaoke_words(
-                item.get("words"),
-                line_start=start_val,
-                line_end=end_val,
-            )
-            entries.append(
-                {
-                    "line": str(item["line"]),
-                    "start_ts": start_val,
-                    "end_ts": end_val,
-                    "words": words,
-                }
-            )
-            prev_end = end_val
 
         self._karaoke_entries = entries
         self._karaoke_end_ts = [item["end_ts"] for item in entries]
@@ -3594,17 +3077,6 @@ class App(tk.Tk):
             self._karaoke_countdown_job = None
         self._karaoke_countdown_value = None
 
-    def _clean_lyrics_lines(self, raw: str) -> List[str]:
-        lines: List[str] = []
-        for line in raw.splitlines():
-            cleaned = line.strip()
-            if not cleaned:
-                continue
-            if cleaned.startswith("["):
-                continue
-            lines.append(cleaned)
-        return lines
-
     def _prompt_lyrics_text(
         self,
         title: str,
@@ -3654,7 +3126,7 @@ class App(tk.Tk):
 
         def on_start() -> None:
             raw = text.get("1.0", "end")
-            lines = self._clean_lyrics_lines(raw)
+            lines = clean_lyrics_lines(raw)
             if not lines:
                 messagebox.showerror("No lyrics", "Paste at least one non-empty lyric line.")
                 return

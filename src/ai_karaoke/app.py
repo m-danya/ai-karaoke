@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from .config import default_library_path, load_config, resolve_library_path, save_config
+from .settings import AppSettings, default_library_path, resolve_library_path
 from .ui_main import App
 
 
 def main() -> None:
-    config = load_config()
-    raw_path = config.get("library_path")
+    settings = AppSettings.load()
+    raw_path = settings.library_path
     invalid_path: Optional[str] = None
     if raw_path:
         candidate = resolve_library_path(raw_path)
@@ -28,10 +28,10 @@ def main() -> None:
             invalid_path = raw_path
         folder = Path.cwd().resolve()
 
-    config["library_path"] = str(folder)
-    save_config(config)
+    settings.library_path = str(folder)
+    settings.save()
 
-    app = App(folder, invalid_path=invalid_path, config=config)
+    app = App(folder, invalid_path=invalid_path, settings=settings)
     # App may have destroyed itself on error.
     if app.winfo_exists():
         app.mainloop()

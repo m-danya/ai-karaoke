@@ -7,7 +7,7 @@ import time
 
 from tqdm import tqdm
 
-from ai_karaoke.music_processing.lyrics_align import clean_lyrics_lines
+from ai_karaoke.services.karaoke_file_service import clean_lyrics_lines
 
 VOCALS_SUFFIX = "_(Vocals)"
 GENIUS_LYRICS_SUFFIX = "_(Genius Lyrics)"
