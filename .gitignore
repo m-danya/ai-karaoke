@@ -219,3 +219,15 @@ __marimo__/
 
 # ai-karaoke runtime model cache
 /models-data/
+
+# Mobile build dependencies and intermediates
+/web/node_modules/
+/web/out/
+/web/android/.gradle/
+/web/android/local.properties
+/web/android/**/build/
+/web/android/capacitor-cordova-android-plugins/
+/src/ai_karaoke/remote_web/
+/web/test-results/
+/web/playwright-report/
+/artifacts/

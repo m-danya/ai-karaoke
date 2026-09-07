@@ -1,0 +1,6 @@
+{
+  "appId": "ru.mdanya.aikaraoke",
+  "appName": "AI Karaoke",
+  "webDir": "out",
+  "server": { "androidScheme": "http", "cleartext": true }
+}

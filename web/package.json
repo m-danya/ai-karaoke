@@ -1,0 +1,31 @@
+{
+  "name": "ai-karaoke-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "node smoke.mjs",
+    "test:android": "node smoke-android.mjs",
+    "android:sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.3.0",
+    "@capacitor/app": "8.1.0",
+    "@capacitor/core": "8.3.0",
+    "lucide-react": "0.468.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.3.0",
+    "@playwright/test": "1.61.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "4.7.0",
+    "typescript": "5.9.3",
+    "vite": "6.4.3"
+  }
+}

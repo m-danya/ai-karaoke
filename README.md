@@ -104,3 +104,86 @@ uv run ai-karaoke
 ## Vibe-coding notice
 
 This is a hobby project. All code in this repository was vibe-coded using `gpt-5.2-codex` in a week or so.
+
+## Server mode and Android
+
+Install [AI Karaoke.apk](./AI%20Karaoke.apk) on an Android phone or tablet (Android
+7.0/API 24 or newer). The app contains its own interface and audio player.
+
+1. Open the desktop app, choose your library, and click **Server mode OFF**. The
+   button changes to **Server mode ON**; HTTP and UDP discovery listen on
+   **0.0.0.0:9595**. Server mode starts disabled on every desktop launch.
+2. Connect the computer and Android device to the same LAN/Wi-Fi. Open the Android
+   app: it automatically searches for servers. Tap a result, or enter the
+   computer's IP/hostname manually. The port is always 9595.
+3. Choose a song and tap **Начать караоке**. Connect your Bluetooth speaker to
+   **Android**: both stems are downloaded and mixed on that device. The computer
+   serves files and performs processing/export jobs; mobile playback does not
+   start or control desktop audio.
+4. Click **Server mode ON** again to stop serving. Closing the desktop also stops
+   the server. A song already downloaded to Android can continue playing.
+
+Multiple devices can play different songs, positions, mixes and loops at the same
+time. Playback, autoplay, lyrics settings, playlists and mobile history belong to
+each client. Existing desktop playlists are copied on the first connection to a
+library; subsequent mobile edits are local. Missing playlist tracks remain
+visible in red and cannot play. Mobile history is updated when karaoke starts.
+
+The mobile interface includes search, folder/playlist/history filters, separate
+0–200% vocals/instrumental controls, mute/reset, pause, seeking, autoplay, timed
+word highlighting, vocal waveform, A–B loops, line/font settings, start countdown,
+finish celebration, and lyrics search. Tap a lyric line to seek to it. Settings
+include a lyrics offset for Bluetooth latency (negative values delay highlighting).
+It also supports importing original MP3s, processing with worker/Genius-delay and
+`--only-align` options, process logs/cancellation, transposed copies, deletion,
+MP3 mix exports, and MP4 karaoke exports with dimensions/FPS. Exports are downloaded
+to Android's Downloads folder. MP4 uses the instrumental track, as on desktop.
+
+The server shares the library selected **when enabled**. Changing the desktop
+library does not interrupt clients; toggle server mode off/on to share the new
+folder. Import, delete, transpose and processing change that shared library;
+refresh the desktop/mobile library to see these changes.
+
+There is **no authentication or encryption**. Use a trusted LAN and do not expose
+9595 to the Internet. Allow TCP 9595 and UDP 9595 in the computer's firewall.
+Discovery broadcasts on connected IPv4 interfaces and also probes their local
+/24 ranges when UDP is filtered. On larger/routed networks, broadcast discovery
+or manual entry works; Wi-Fi client isolation can prevent any connection.
+
+Audio is decoded in device memory before playback; long tracks need more RAM.
+Keep the karaoke screen open while singing (the app keeps the screen awake).
+Bluetooth routing is selected in Android's system settings.
+
+### Build the Android APK
+
+See [Android APK build instructions](docs/build-android.md) for requirements,
+building with `scripts/build-android.sh`, and signing configuration.
+
+### Web client and API
+
+`./scripts/build-web.sh` also copies the web build into
+`src/ai_karaoke/remote_web/`. With server mode enabled, visit
+`http://COMPUTER:9595/` in a browser. Android bundles the same web client locally;
+browser access is optional. LAN scanning uses an Android Capacitor plugin.
+
+The API has no session, selected song, audio engine, cookies or playback commands.
+Every operation identifies its resource and supplies all relevant parameters.
+Processing jobs are resources, not playback sessions. See [docs/remote-api.md](docs/remote-api.md).
+
+For development and verification:
+
+```bash
+uv run --no-sync python -m unittest discover -s tests -v
+./scripts/build-web.sh
+# In one terminal (creates a disposable library with generated audio):
+uv run --no-sync python scripts/serve-demo.py
+# In another:
+cd web
+npx playwright install chromium
+node smoke.mjs
+```
+
+The browser smoke check runs two independent clients with phone/tablet layouts,
+checks synchronized stem starts, pause/mix/seek independence, A–B looping, and
+history, and writes screenshots to `artifacts/`. `PLAYWRIGHT_CHROMIUM_EXECUTABLE`
+can select an already installed Chromium binary.

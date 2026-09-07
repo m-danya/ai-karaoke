@@ -150,3 +150,42 @@ This repo is a Python/Tkinter desktop karaoke app plus an audio-processing CLI.
   - `python3 -m py_compile $(find src/ai_karaoke -name '*.py' -print)`
 - Import smoke check in venv:
   - `./.venv/bin/python -c "import ai_karaoke.app, ai_karaoke.ui_main, ai_karaoke.karaoke_screen, ai_karaoke.music_processing.main"`
+
+## Server mode and Android client
+
+- Desktop **Server mode OFF/ON** controls `controllers/server_mode.py`. Default is
+  off; stop it on app close. It shares the folder selected when enabled, so a
+  desktop library change cannot disrupt existing mobile clients.
+- `services/remote_server.py`: standard-library HTTP on **0.0.0.0:9595**, UDP
+  discovery on **9595**, byte-range/HEAD audio delivery, optional built web assets.
+- `services/remote_library.py`: root-confined library resources, opaque stable
+  track IDs, import/delete. Reuse `library_paths.py` and karaoke normalization.
+- `services/remote_jobs.py`: explicit processing, transpose, MP3/MP4 job resources.
+  Never send HTTP work through Tk or use the desktop player's state. Reuse the
+  existing processing runner and services; retain process-group cancellation.
+- API contract: `docs/remote-api.md`. **No client sessions or shared playback
+  state**. Each request identifies its resource and includes all parameters.
+  Jobs/catalogs are shared resources; play, pause, seek, mix and A–B are client-only.
+- `web/`: React/TypeScript/Vite client, packaged for Android with Capacitor 8.
+  `src/player.ts` owns synchronized two-stem Web Audio playback and its local
+  clock. Audio must come from Android, including Bluetooth output; never add
+  remote commands that play sound on the computer.
+- `web/src/storage.ts`: local playlists/history/preferences. Desktop playlists
+  seed the first connection; subsequent mobile edits are independent. Preserve
+  missing track references and show them red/non-playable.
+- `web/android/.../KaraokeLanPlugin.java`: native LAN broadcast + HTTP discovery,
+  downloads and screen-awake control. Manual host entry is required as a fallback.
+  Keep port 9595, no authentication, phone/tablet and rotation support.
+- `scripts/build-android.sh`: builds and signs the release APK; produces root
+  **AI Karaoke.apk**. See [Android build instructions](docs/build-android.md). It must not copy `.env` secrets or hardcode a
+  server address. SDK/JDK/cache locations are environment-overridable.
+- `scripts/build-web.sh`: `npm ci`, typecheck/build, copy `web/out` to
+  `src/ai_karaoke/remote_web`. Android bundles assets; it doesn't require the
+  server's optional browser UI to be built.
+- After mobile/runtime changes rebuild the APK before handing it over. Do not
+  commit dependency folders, build intermediates, SDK locations or signing keys.
+- Verification: `uv run --no-sync python -m unittest discover -s tests -v`;
+  `npm --prefix web run build`; existing Python syntax/import smoke checks.
+  `scripts/serve-demo.py` creates temporary generated audio for `node web/smoke.mjs`
+  (after installing Playwright Chromium). Screenshots go into ignored `artifacts/`.
+  Validate two independently playing clients, not just a single HTTP health call.

@@ -16,7 +16,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .audio import compute_vocals_env, decode_mp3_to_float32
-from .controllers.process_runner import MusicProcessRunner
+from .controllers.process_runner import MusicProcessRunner, music_processing_python
+from .controllers.server_mode import ServerModeController
 from .karaoke_screen import KaraokeCallbacks, KaraokeScreen
 from .library_paths import (
     base_name_for_pair,
@@ -142,6 +143,7 @@ class App(tk.Tk):
         self.items: List[TrackListItem] = []
 
         self.player = PlaybackController()
+        self._server_mode = ServerModeController()
         self._ui_update_job: Optional[str] = None
         self._load_token = 0
         self._autoplay_after_load = False
@@ -479,6 +481,11 @@ class App(tk.Tk):
         header = ttk.Frame(main)
         header.pack(fill="x", pady=(0, 14))
 
+        self.btn_server = ttk.Button(header, text="Server mode OFF", command=self._toggle_server_mode)
+        self.btn_server.pack(side="right")
+        self.server_status = ttk.Label(header, text="", style="Subtle.TLabel")
+        self.server_status.pack(side="right", padx=12)
+
         ttk.Label(header, text="AI Karaoke", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
             header,
@@ -732,6 +739,17 @@ class App(tk.Tk):
         # self.btn_start_recording.pack(fill="x")
 
         self._set_recording_ui_state(False)
+
+    def _toggle_server_mode(self) -> None:
+        try:
+            if self._server_mode.running:
+                self._server_mode.stop()
+            else:
+                self._server_mode.start(self.folder)
+        except Exception as exc:
+            messagebox.showerror("Server mode", f"Could not start server on port 9595:\n{exc}")
+        self.btn_server.configure(text="Server mode ON" if self._server_mode.running else "Server mode OFF")
+        self.server_status.configure(text=f"{self._server_mode.library_name} · 0.0.0.0:9595" if self._server_mode.running else "")
 
     def _set_controls_state(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -1508,14 +1526,7 @@ class App(tk.Tk):
         return Path(__file__).resolve().parents[2]
 
     def _music_processing_python(self) -> str:
-        project_root = self._project_root()
-        if os.name == "nt":
-            candidate = project_root / ".venv" / "Scripts" / "python.exe"
-        else:
-            candidate = project_root / ".venv" / "bin" / "python"
-        if candidate.exists():
-            return str(candidate)
-        return sys.executable
+        return music_processing_python(self._project_root())
 
     def _process_library(self) -> None:
         if self._recording_active:
@@ -3400,6 +3411,7 @@ class App(tk.Tk):
         if self.karaoke.is_open():
             self.karaoke.close()
         self.player.close()
+        self._server_mode.stop()
         self.destroy()
 
     def _start_karaoke_mode(self) -> None:

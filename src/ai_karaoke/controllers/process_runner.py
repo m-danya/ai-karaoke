@@ -4,8 +4,14 @@ import os
 import queue
 import signal
 import subprocess
+import sys
 import threading
 from pathlib import Path
+
+
+def music_processing_python(project_root: Path) -> str:
+    candidate = project_root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return str(candidate) if candidate.is_file() else sys.executable
 
 
 class MusicProcessRunner:
